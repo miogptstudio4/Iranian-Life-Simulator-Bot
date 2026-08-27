@@ -368,6 +368,26 @@ def _is_authorized_panel(query, owner_id: str | None) -> bool:
     return str(query.from_user.id) == str(owner_id)
 
 
+def after_action_keyboard(owner_id: str | None = None):
+    """صفحه بعد از انجام عملیات؛ پنل بزرگ فقط با انتخاب کاربر باز می‌شود."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎮 بله، برو به پنل", callback_data=_owner_callback("life", owner_id, "panel")),
+         InlineKeyboardButton("❌ نه، همین‌جا می‌مونم", callback_data=_owner_callback("life", owner_id, "stay"))],
+    ])
+
+
+def inventory_keyboard(owner_id: str | None, inventory: dict):
+    """دکمه‌های واقعی کوله‌پشتی؛ هر آیتم مستقیماً قابل استفاده است."""
+    rows = []
+    for idx, (item, qty) in enumerate(inventory.items()):
+        rows.append([InlineKeyboardButton(
+            f"🧃 استفاده از {item} ×{qty}",
+            callback_data=_owner_callback("life", owner_id, "usei", idx),
+        )])
+    rows.append([InlineKeyboardButton("🎮 پنل اصلی", callback_data=_owner_callback("life", owner_id, "panel"))])
+    return InlineKeyboardMarkup(rows)
+
+
 def group_panel_keyboard(owner_id: str):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 وضعیت من", callback_data=_owner_callback("life", owner_id, "status")),
@@ -631,16 +651,22 @@ async def life_callback(update, context):
     gt = GAME_TIMES[uid]
     key = action[0] if action else "menu"
     text = ""
-    markup = life_keyboard(owner_id)
+    markup = after_action_keyboard(owner_id)
     if key == "menu": text = "🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:"
     elif key == "home": text = home_text(player)
     elif key == "family": text = family_text(player)
-    elif key == "panel": text = f"🎮 پنل شخصی {player.display_name}\n\n{player.status_text()}"; markup = group_panel_keyboard(uid) if owner_id else life_keyboard(owner_id)
+    elif key == "panel":
+        text = f"🎮 پنل شخصی {player.display_name}\n\n{player.status_text()}"
+        markup = group_panel_keyboard(uid)
+    elif key == "stay":
+        text = "👌 باشه؛ همین‌جا می‌مونیم. هر وقت خواستی از دکمه «پنل» استفاده کن."
+        markup = None
     elif key == "status": text = render_status_card(player, gt)
     elif key == "profile": text = render_profile(player)
     elif key == "inventory":
         inv = getattr(player, "inventory", {}) or {}
         text = "🎒 کوله‌پشتی خالیه." if not inv else "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k, v in inv.items())
+        markup = inventory_keyboard(owner_id, inv)
     elif key == "rest":
         player.fatigue = max(0, player.fatigue - random.randint(12, 25))
         player.mental = min(100, player.mental + random.randint(1, 5))
@@ -749,6 +775,18 @@ async def life_callback(update, context):
     elif key == "tax": text = tax_text(player)
     elif key == "paytax": text = pay_tax(player)
     else: text = "🌍 سیستم زندگی"
+
+    # عملیات انجام‌شده دیگر پنل بزرگ را خودکار باز نمی‌کند.
+    action_keys = {
+        "rest", "use", "usei", "study", "deposit1", "withdraw1", "loan",
+        "rent", "buyhouse", "buyvehicle", "meet", "marry", "child",
+        "complaint", "lawyer", "court", "crime", "fine", "jail",
+        "startbiz", "runbiz", "buy", "sell", "paytax", "advmeet",
+        "advwork", "advtrain", "advdeposit", "advloan", "advbiz",
+    }
+    if key in action_keys:
+        markup = after_action_keyboard(owner_id)
+
     economic_tick(player, gt.day)
     daily_tick(player, gt.day)
     if PSYCOPG2_AVAILABLE:
@@ -1123,8 +1161,8 @@ async def handle_message(update, context):
         )
         return
 
-    if user.id not in GAME_TIMES:
-        GAME_TIMES[user.id] = GameTime(start_hour=random.randint(7, 20))
+    if uid not in GAME_TIMES:
+        GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
     gt = GAME_TIMES[user.id]
 
     # بازیکن زندانی فقط می‌تواند یک روز از محکومیتش را بگذراند یا وضعیت قانون را ببیند.
@@ -1222,16 +1260,10 @@ async def handle_message(update, context):
 
     if text in ["🎒 کوله‌پشتی", "کوله‌پشتی", "کیف", "inventory"]:
         inv = getattr(player, "inventory", {}) or {}
-        if not inv:
-            reply = "🎒 کوله‌پشتی خالیه."
-            markup = None
-        else:
-            reply = "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k,v in inv.items())
-            rows = []
-            for idx, (item, qty) in enumerate(inv.items()):
-                rows.append([InlineKeyboardButton(f"استفاده: {item} ×{qty}", callback_data=_owner_callback("life", uid, "usei", idx))])
-            markup = InlineKeyboardMarkup(rows)
-        await update.message.reply_text(reply, reply_markup=markup)
+        reply = "🎒 کوله‌پشتی خالیه." if not inv else (
+            "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {item}: {qty}" for item, qty in inv.items())
+        )
+        await update.message.reply_text(reply, reply_markup=inventory_keyboard(uid, inv))
         return
 
     if text in ["فرزندان", "بچه‌ها"]:
