@@ -300,6 +300,9 @@ async def movement_callback(update, context):
         "east": ("شرق", DIRECTIONS["شرق"]),
         "west": ("غرب", DIRECTIONS["غرب"]),
     }
+    if action not in direction_map:
+        await query.edit_message_text("❌ جهت نامعتبر است.", reply_markup=movement_keyboard())
+        return
     direction, (dx, dy) = direction_map[action]
 
     gt.advance(random.randint(15, 40))
@@ -759,6 +762,7 @@ async def handle_message(update, context):
             ok, msg = can_take_job(player, job_name)
             if ok:
                 player.job = job_name
+                ensure_advanced(player)["career"]["job"] = job_name
                 reply = f"✅ شغلت شد: {job_name}"
             else:
                 reply = msg

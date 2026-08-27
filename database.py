@@ -6,7 +6,7 @@
 import os
 import json
 from datetime import datetime
-from urllib.parse import urlparse, unquote
+from urllib.parse import urlparse
 
 # تلاش برای وارد کردن psycopg2
 try:
@@ -17,53 +17,55 @@ except ImportError:
     PSYCOPG2_AVAILABLE = False
     print("⚠️  psycopg2 نصب نیست. برای ذخیره دائمی: pip install psycopg2-binary")
 
-# تنظیمات اتصال. Render معمولاً یک DATABASE_URL کامل می‌دهد؛
-# در عین حال DB_HOST/DB_PORT/... برای سازگاری با Blueprint حفظ شده‌اند.
-def _build_db_config():
-    database_url = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or "").strip()
-    if database_url:
-        parsed = urlparse(database_url)
-        if parsed.hostname:
-            return {
+# تنظیمات اتصال (از محیط یا پیش‌فرض)
+def _db_config():
+    """Build a safe psycopg2 config. DATABASE_URL is preferred on Render."""
+    url = (os.getenv("DATABASE_URL") or os.getenv("DB_URL") or "").strip()
+    if url:
+        try:
+            parsed = urlparse(url)
+            if not parsed.hostname:
+                raise ValueError("DATABASE_URL فاقد hostname است")
+            cfg = {
                 "host": parsed.hostname,
                 "port": parsed.port or 5432,
-                "dbname": (parsed.path or "/").lstrip("/") or "iranian_life_sim",
-                "user": unquote(parsed.username or ""),
-                "password": unquote(parsed.password or ""),
+                "dbname": (parsed.path or "").lstrip("/") or "iranian_life_sim",
+                "user": parsed.username or "postgres",
+                "password": parsed.password or "",
             }
+            # Preserve sslmode when supplied by an external PostgreSQL URL.
+            if parsed.query:
+                from urllib.parse import parse_qs
+                qs = parse_qs(parsed.query)
+                if qs.get("sslmode"):
+                    cfg["sslmode"] = qs["sslmode"][0]
+            return cfg
+        except Exception as e:
+            print(f"⚠️ DATABASE_URL نامعتبر است: {e}")
 
-    # اگر DB_HOST به اشتباه خودِ URL باشد، آن را هم تشخیص بده.
-    raw_host = (os.getenv("DB_HOST") or "localhost").strip()
-    if "://" in raw_host:
-        parsed = urlparse(raw_host)
-        if parsed.hostname:
-            return {
-                "host": parsed.hostname,
-                "port": parsed.port or int(os.getenv("DB_PORT", "5432")),
-                "dbname": (parsed.path or "/").lstrip("/") or os.getenv("DB_NAME", "iranian_life_sim"),
-                "user": unquote(parsed.username or os.getenv("DB_USER", "postgres")),
-                "password": unquote(parsed.password or os.getenv("DB_PASSWORD", "postgres")),
-            }
-
+    host = os.getenv("DB_HOST", "localhost").strip()
+    # Backward compatibility: older Render deployments sometimes put the whole URL in DB_HOST.
+    if host.startswith(("postgres://", "postgresql://")):
+        os.environ["DATABASE_URL"] = host
+        return _db_config()
     return {
-        "host": raw_host,
+        "host": host,
         "port": int(os.getenv("DB_PORT", "5432")),
         "dbname": os.getenv("DB_NAME", "iranian_life_sim"),
         "user": os.getenv("DB_USER", "postgres"),
         "password": os.getenv("DB_PASSWORD", "postgres"),
     }
 
-DB_CONFIG = _build_db_config()
+
+DB_CONFIG = _db_config()
 
 def get_connection():
     if not PSYCOPG2_AVAILABLE:
         return None
     try:
-        conn = psycopg2.connect(connect_timeout=10, **DB_CONFIG)
-        return conn
+        return psycopg2.connect(connect_timeout=10, **_db_config())
     except Exception as e:
         print(f"❌ خطا در اتصال به دیتابیس: {e}")
-        print(f"ℹ️ DB host={DB_CONFIG.get('host')} port={DB_CONFIG.get('port')} db={DB_CONFIG.get('dbname')}")
         return None
 
 
@@ -81,6 +83,7 @@ def init_database():
                 player_id       VARCHAR(32) UNIQUE NOT NULL,
                 numeric_id      VARCHAR(32),
                 name            VARCHAR(64) NOT NULL,
+                job             VARCHAR(64) DEFAULT 'بیکار',
                 display_name    VARCHAR(64),
                 gender          VARCHAR(16),
                 city            VARCHAR(64),
@@ -124,6 +127,7 @@ def init_database():
 
         # ستون‌های جدید برای نسخه‌های قبلی دیتابیس
         for migration in [
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS job VARCHAR(64) DEFAULT 'بیکار'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS family_members JSONB DEFAULT '[]'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS home_data JSONB DEFAULT '{}'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_age_game_day INT DEFAULT 0",
@@ -173,17 +177,19 @@ def save_player(char) -> bool:
 
         cur.execute("""
             INSERT INTO players (
-                player_id, numeric_id, name, display_name, gender, city, neighborhood,
+                player_id, numeric_id, name, job, display_name, gender, city, neighborhood,
                 home, family, birth_year, age_days, hunger, thirst, fatigue, health, mental,
                 money, location, x, y, god_mode, marital_status, bio, admin_password_hash,
                 children, family_members, home_data, inventory, life_data, last_age_game_day, updated_at, last_login
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT (player_id) DO UPDATE SET
                 numeric_id = EXCLUDED.numeric_id,
                 name = EXCLUDED.name,
+                job = EXCLUDED.job,
                 display_name = EXCLUDED.display_name,
                 gender = EXCLUDED.gender,
                 city = EXCLUDED.city,
@@ -216,6 +222,7 @@ def save_player(char) -> bool:
             char.player_id,
             getattr(char, 'numeric_id', None),
             char.name,
+            getattr(char, 'job', 'بیکار'),
             getattr(char, 'display_name', char.name),
             char.gender,
             char.city,
@@ -302,6 +309,7 @@ def apply_loaded_data(char, data: dict):
     char.player_id = data.get("player_id", char.player_id)
     char.numeric_id = data.get("numeric_id")
     char.name = data.get("name", char.name)
+    char.job = data.get("job", getattr(char, "job", "بیکار"))
     char.display_name = data.get("display_name", char.name)
     char.gender = data.get("gender", char.gender)
     char.city = data.get("city", char.city)
@@ -322,6 +330,11 @@ def apply_loaded_data(char, data: dict):
         try: life_data = json.loads(life_data)
         except Exception: life_data = {}
     char.life_data = life_data or {}
+    try:
+        from advanced_simulation import ensure_advanced
+        ensure_advanced(char)["career"]["job"] = getattr(char, "job", "بیکار")
+    except Exception:
+        pass
     char.last_age_game_day = data.get("last_age_game_day", 0)
     char.hunger = data.get("hunger", 50)
     char.thirst = data.get("thirst", 50)
