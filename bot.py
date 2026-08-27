@@ -299,21 +299,50 @@ def find_iran_city(text: str) -> str | None:
 
 
 async def start(update, context):
+    """Start is a one-time initialization command for a living player.
+
+    Once a character exists and is alive, /start must NOT ask for a city or
+    recreate/reset the character. A new life can only be created after death.
+    """
     user = update.effective_user
     uid = str(user.id)
+    player = get_or_load_player(uid)
 
-    # همیشه امکان شروع مجدد
-    # اگر مرده یا /start زده → ریست کامل بعد از انتخاب شهر
+    # Already alive: /start is finished and simply opens the existing game.
+    if player and player.alive:
+        WAITING_CITY.discard(uid)
+        gt = GAME_TIMES.setdefault(uid, GameTime(start_hour=random.randint(7, 20)))
+        await update.message.reply_text(
+            f"🎮 {player.display_name}، زندگی‌ات از قبل شروع شده و هنوز زنده‌ای.\n\n"
+            f"سن: {player.age} سال\n"
+            f"شهر: {player.city}\n\n"
+            f"از اینجا ادامه بده؛ /start زندگی فعلی را ریست نمی‌کند.",
+            reply_markup=(group_panel_keyboard(uid)
+                          if update.effective_chat.type != "private"
+                          else main_keyboard()),
+        )
+        return
+
+    # Dead player: /start explicitly begins a new life.
+    if player and not player.alive:
+        WAITING_CITY.add(uid)
+        await update.message.reply_text(
+            f"💀 زندگی قبلی {player.display_name} تمام شده است.\n\n"
+            "اگر می‌خواهی یک زندگی کاملاً جدید بسازی، شهر شروع را انتخاب کن.\n"
+            "🏙 نام یکی از شهرهای ایران را بفرست یا در گروه از /city تهران استفاده کن.",
+            reply_markup=ReplyKeyboardRemove() if update.effective_chat.type == "private" else None,
+        )
+        return
+
+    # First ever start: create only after city selection.
     WAITING_CITY.add(uid)
-
     await update.message.reply_text(
         f"سلام {user.first_name}!\n\n"
-        f"به شبیه‌ساز زندگی یک ایرانی خوش اومدی.\n\n"
-        f"🎮 بازی اصلی از ۱۷ سالگی شروع می‌شه:\n"
-        f"• جنسیت، پول، شغل و همه چیز رندوم از اول ساخته می‌شه\n\n"
-        f"🏙 اول بگو می‌خوای تو کدوم **شهر ایران** باشی؟\n"
-        f"فقط **نام شهر** را بنویس.\n\n"
-        f"مثال:\nتهران\nاهواز\nمشهد\nاصفهان\nشیراز\nرشت\nتبریز\n...",
+        "به شبیه‌ساز زندگی یک ایرانی خوش اومدی.\n\n"
+        "🎮 بازی اصلی از ۱۷ سالگی شروع می‌شه.\n"
+        "🏙 اول شهر شروع زندگی را انتخاب کن.\n\n"
+        "مثال: تهران، اهواز، مشهد، اصفهان، شیراز، رشت، تبریز\n\n"
+        "بعد از ساخت شخصیت، دیگر /start از تو شهر نمی‌خواهد و زندگی‌ات را ریست نمی‌کند.",
         reply_markup=ReplyKeyboardRemove() if update.effective_chat.type == "private" else None,
     )
 
@@ -686,7 +715,7 @@ async def help_cmd(update, context):
         "❤️ روابط / 👶 فرزند / ⚖️ قانون / 🏥 بیمارستان\n"
         "🏢 کسب‌وکار / 📈 بورس / 🧾 مالیات / 🏙 اقتصاد شهر\n\n"
         "⏳ هر ۱۰ روز بازی = ۱ سال زندگی.\n"
-        "⚠️ اگر مردی، دوباره /start بزن تا یک زندگی جدید بسازی."
+        "⚠️ وقتی زنده‌ای، /start زندگی‌ات را ریست نمی‌کند. فقط بعد از مرگ می‌توانی با /start زندگی جدید بسازی."
     )
 
 
