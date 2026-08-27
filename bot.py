@@ -10,8 +10,6 @@ import sys
 import logging
 import random
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "data"))
-
 # تلاش برای python-telegram-bot
 try:
     from telegram import Update, ReplyKeyboardMarkup
