@@ -578,29 +578,6 @@ def law_keyboard(owner_id: str | None = None):
     ])
 
 
-def inventory_keyboard(player, owner_id: str | None = None):
-    """دکمه‌های کوله‌پشتی؛ مستقل از پنل زندگی تا همیشه قابل کلیک باشند."""
-    inv = getattr(player, "inventory", {}) or {}
-    rows = []
-    for idx, (item, qty) in enumerate(inv.items()):
-        if int(qty or 0) > 0:
-            rows.append([InlineKeyboardButton(
-                f"🎒 استفاده: {item} ×{qty}",
-                callback_data=_owner_callback("life", owner_id, "usei", idx),
-            )])
-    rows.append([InlineKeyboardButton("🔄 تازه‌سازی کوله‌پشتی", callback_data=_owner_callback("life", owner_id, "inventory"))])
-    rows.append([InlineKeyboardButton("⬅️ برگشت به زندگی", callback_data=_owner_callback("life", owner_id, "menu"))])
-    return InlineKeyboardMarkup(rows)
-
-
-def inventory_text(player):
-    inv = getattr(player, "inventory", {}) or {}
-    inv = {str(k): int(v or 0) for k, v in inv.items() if int(v or 0) > 0}
-    if not inv:
-        return "🎒 کوله‌پشتی خالیه."
-    return "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k, v in inv.items())
-
-
 def life_keyboard(owner_id: str | None = None):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏫 تحصیل", callback_data=_owner_callback("life", owner_id, "education")), InlineKeyboardButton("📚 درس خواندن", callback_data=_owner_callback("life", owner_id, "study"))],
@@ -637,6 +614,29 @@ def life_trade_keyboard(owner_id: str | None = None):
     ])
 
 
+def inventory_keyboard(player, owner_id: str | None = None):
+    inv = getattr(player, "inventory", {}) or {}
+    rows = []
+    for idx, (item, qty) in enumerate(inv.items()):
+        try:
+            qty = int(qty)
+        except Exception:
+            continue
+        if qty > 0:
+            rows.append([InlineKeyboardButton(f"استفاده: {item} ×{qty}", callback_data=_owner_callback("life", owner_id, "usei", idx))])
+    rows.append([InlineKeyboardButton("🔄 تازه‌سازی", callback_data=_owner_callback("life", owner_id, "inventory"))])
+    rows.append([InlineKeyboardButton("⬅️ بازگشت", callback_data=_owner_callback("life", owner_id, "menu"))])
+    return InlineKeyboardMarkup(rows)
+
+
+def inventory_text(player):
+    inv = getattr(player, "inventory", {}) or {}
+    clean = [(str(k), int(v)) for k, v in inv.items() if int(v) > 0]
+    if not clean:
+        return "🎒 کوله‌پشتی خالیه."
+    return "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k, v in clean)
+
+
 async def life_callback(update, context):
     query = update.callback_query
     owner_id, action = _callback_owner_and_parts(query.data, "life")
@@ -669,24 +669,20 @@ async def life_callback(update, context):
         player.mental = min(100, player.mental + random.randint(1, 5))
         gt.advance(120)
         text = "😴 استراحت کردی و انرژی‌ات بهتر شد.\n" + daily_life_event(player)
-    elif key == "use": text = use_item(player, action[1])[1] if len(action)>1 else "❌ آیتم مشخص نیست."
+    elif key == "use":
+        ok, msg = use_item(player, action[1]) if len(action) > 1 else (False, "❌ آیتم مشخص نیست.")
+        text = msg
+        markup = inventory_keyboard(player, owner_id)
     elif key == "usei":
         inv = getattr(player, "inventory", {}) or {}
         try:
-            idx = int(action[1])
-            items = [(str(k), int(v or 0)) for k, v in inv.items() if int(v or 0) > 0]
-            if idx < 0 or idx >= len(items):
-                raise IndexError
-            item_name = items[idx][0]
-            ok, result = use_item(player, item_name)
-            text = result
-            markup = inventory_keyboard(player, owner_id)
+            index = int(action[1])
+            item_name = list(inv.keys())[index]
         except (ValueError, IndexError, TypeError):
-            text = "❌ آیتم پیدا نشد."
+            text = "❌ این دکمه قدیمی شده؛ کوله‌پشتی را تازه‌سازی کن."
             markup = inventory_keyboard(player, owner_id)
-        except Exception as exc:
-            logger.exception("Inventory use failed for %s: %s", uid, exc)
-            text = "❌ هنگام استفاده از آیتم خطایی رخ داد. کوله‌پشتی دوباره بارگذاری شد."
+        else:
+            ok, text = use_item(player, item_name)
             markup = inventory_keyboard(player, owner_id)
     elif key == "smart": text = smart_status(player) + "\n\n" + smart_advice(player)
     elif key == "smartadvice": text = smart_advice(player)
@@ -787,7 +783,7 @@ async def life_callback(update, context):
     daily_tick(player, gt.day)
     if PSYCOPG2_AVAILABLE:
         try: save_player(player)
-        except Exception: pass
+        except Exception as exc: logger.warning("Could not save player %s: %s", uid, exc)
     await query.edit_message_text(text + "\n\n" + ("روز بازی: " + str(gt.day + 1)), reply_markup=markup)
 
 
@@ -852,7 +848,7 @@ async def shop_callback(update, context):
         ok, msg = buy_item(player, shop_name, item_name)
         if PSYCOPG2_AVAILABLE:
             try: save_player(player)
-            except Exception: pass
+            except Exception as exc: logger.warning("Could not save player %s: %s", uid, exc)
         await query.edit_message_text(msg + "\n\n" + shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name, owner_id))
 
 
@@ -1134,7 +1130,7 @@ async def handle_message(update, context):
         player.location = "مرکز شهر"
         if PSYCOPG2_AVAILABLE:
             try: save_player(player)
-            except Exception: pass
+            except Exception as exc: logger.warning("Could not save player %s: %s", uid, exc)
         await update.message.reply_text(f"🏙 شهر فعلی: {city}")
         return
 
@@ -1255,12 +1251,7 @@ async def handle_message(update, context):
         return
 
     if text in ["🎒 کوله‌پشتی", "کوله‌پشتی", "کیف", "inventory"]:
-        # این مسیر عمداً قبل از شاخه‌های دیگر اجرا می‌شود تا Reply Keyboard
-        # کوله‌پشتی همیشه به همان پنل واقعی متصل باشد.
-        await update.message.reply_text(
-            inventory_text(player),
-            reply_markup=inventory_keyboard(player, uid),
-        )
+        await update.message.reply_text(inventory_text(player), reply_markup=inventory_keyboard(player, uid))
         return
 
     if text in ["فرزندان", "بچه‌ها"]:
@@ -1467,6 +1458,22 @@ async def handle_message(update, context):
         await update.message.reply_text(reply)
 
 
+async def bot_error_handler(update, context):
+    """Never hide callback/runtime failures behind misleading user messages."""
+    logger.exception("Unhandled bot error", exc_info=context.error)
+    try:
+        if getattr(update, "callback_query", None):
+            q = update.callback_query
+            try:
+                await q.answer("⚠️ خطای موقت؛ دوباره امتحان کن.", show_alert=True)
+            except Exception:
+                pass
+        elif getattr(update, "effective_message", None):
+            await update.effective_message.reply_text("⚠️ خطای موقت در اجرای این عملیات رخ داد. اطلاعاتت پاک نشده.")
+    except Exception:
+        pass
+
+
 def main_bot():
     # On Render this process is deployed as a Web Service so the health endpoint
     # keeps the service observable while the Telegram polling loop runs.
@@ -1491,6 +1498,7 @@ def main_bot():
             print("DB init:", e)
 
     app = Application.builder().token(TOKEN).build()
+    app.add_error_handler(bot_error_handler)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
