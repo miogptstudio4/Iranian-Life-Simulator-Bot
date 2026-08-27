@@ -40,7 +40,7 @@ class Character:
         self.city = random.choice(CITY_LIST)
         self.family = random.choice(FAMILY_TYPES)
         self.birth_year = 1385
-        self.age_days = 100  # ۱۰ سالگی؛ دوره تولد تا ۱۰ سالگی در شروع بازی روایت می‌شود
+        self.age_days = 170  # قانون اصلی: شروع بازی از ۱۷ سالگی
 
         city_data = CITIES.get(self.city, {})
         neighborhoods = city_data.get("neighborhoods", ["مرکز شهر"])

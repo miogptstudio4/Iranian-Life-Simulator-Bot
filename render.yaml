@@ -1,21 +1,23 @@
-# Render.com Blueprint
-# https://render.com/docs/blueprint-spec
-
+# Render Blueprint - Telegram bot + public health endpoint
 services:
-  # ربات تلگرام (Worker همیشه روشن)
-  - type: worker
+  - type: web
     name: iranian-life-sim-bot
     runtime: python
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: python bot.py
+    healthCheckPath: /health
     envVars:
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       - key: DB_HOST
-        sync: false
+        fromDatabase:
+          name: iranian-life-db
+          property: host
       - key: DB_PORT
-        value: "5432"
+        fromDatabase:
+          name: iranian-life-db
+          property: port
       - key: DB_NAME
         fromDatabase:
           name: iranian-life-db
@@ -29,7 +31,10 @@ services:
           name: iranian-life-db
           property: password
       - key: PYTHON_VERSION
-        value: "3.12.0"
+        value: "3.13.5"
+
+  # Optional separate lightweight health/landing service is not needed;
+  # the Telegram process itself exposes /health on Render's $PORT.
 
 databases:
   - name: iranian-life-db

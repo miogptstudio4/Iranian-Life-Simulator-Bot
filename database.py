@@ -74,6 +74,8 @@ def init_database():
                 children        JSONB DEFAULT '[]',
                 family_members JSONB DEFAULT '[]',
                 home_data      JSONB DEFAULT '{}',
+                inventory      JSONB DEFAULT '{}',
+                life_data      JSONB DEFAULT '{}',
                 last_age_game_day INT DEFAULT 0,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -94,6 +96,8 @@ def init_database():
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS family_members JSONB DEFAULT '[]'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS home_data JSONB DEFAULT '{}'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_age_game_day INT DEFAULT 0",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS inventory JSONB DEFAULT '{}'",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS life_data JSONB DEFAULT '{}'",
         ]:
             cur.execute(migration)
 
@@ -133,16 +137,18 @@ def save_player(char) -> bool:
         children_json = json.dumps(getattr(char, 'children', []), ensure_ascii=False)
         family_json = json.dumps(getattr(char, 'family_members', []), ensure_ascii=False)
         home_json = json.dumps(getattr(char, 'home_data', {}), ensure_ascii=False)
+        inventory_json = json.dumps(getattr(char, 'inventory', {}), ensure_ascii=False)
+        life_data_json = json.dumps(getattr(char, 'life_data', {}), ensure_ascii=False)
 
         cur.execute("""
             INSERT INTO players (
                 player_id, numeric_id, name, display_name, gender, city, neighborhood,
                 home, family, birth_year, age_days, hunger, thirst, fatigue, health, mental,
                 money, location, x, y, god_mode, marital_status, bio, admin_password_hash,
-                children, family_members, home_data, last_age_game_day, updated_at, last_login
+                children, family_members, home_data, inventory, life_data, last_age_game_day, updated_at, last_login
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT (player_id) DO UPDATE SET
                 numeric_id = EXCLUDED.numeric_id,
@@ -170,6 +176,8 @@ def save_player(char) -> bool:
                 children = EXCLUDED.children,
                 family_members = EXCLUDED.family_members,
                 home_data = EXCLUDED.home_data,
+                inventory = EXCLUDED.inventory,
+                life_data = EXCLUDED.life_data,
                 last_age_game_day = EXCLUDED.last_age_game_day,
                 updated_at = CURRENT_TIMESTAMP,
                 last_login = CURRENT_TIMESTAMP;
@@ -201,6 +209,8 @@ def save_player(char) -> bool:
             children_json,
             family_json,
             home_json,
+            inventory_json,
+            life_data_json,
             getattr(char, 'last_age_game_day', 0),
         ))
         conn.commit()
@@ -268,9 +278,19 @@ def apply_loaded_data(char, data: dict):
     char.home = data.get("home", char.home)
     char.family = data.get("family", char.family)
     char.birth_year = data.get("birth_year", 1385)
-    char.age_days = data.get("age_days", 100)
+    char.age_days = max(170, data.get("age_days", 170))
     char.family_members = data.get("family_members") or getattr(char, 'family_members', [])
     char.home_data = data.get("home_data") or getattr(char, 'home_data', {})
+    inventory = data.get("inventory", {})
+    if isinstance(inventory, str):
+        try: inventory = json.loads(inventory)
+        except Exception: inventory = {}
+    char.inventory = inventory or {}
+    life_data = data.get("life_data", {})
+    if isinstance(life_data, str):
+        try: life_data = json.loads(life_data)
+        except Exception: life_data = {}
+    char.life_data = life_data or {}
     char.last_age_game_day = data.get("last_age_game_day", 0)
     char.hunger = data.get("hunger", 50)
     char.thirst = data.get("thirst", 50)

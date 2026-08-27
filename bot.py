@@ -8,16 +8,21 @@ import os
 import sys
 import logging
 import random
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from difficulty import hard_cost
 
 try:
-    from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+    from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
     print("برای ربات تلگرام نصب کنید: pip install python-telegram-bot")
 
 from locations import CITY_LIST, CITIES, FAMILY_TYPES, IRAN_CITIES
+from iran_cities_full import load_full_iran_cities
+from shops import SHOPS, shop_list_text, buy_item, use_item
 from admin import (
     SUPER_ADMIN_ID, generate_player_id, hash_password, DEFAULT_ADMIN_PASSWORD,
     is_super_admin, add_admin, list_admins
@@ -31,6 +36,12 @@ from database import (
 )
 from render import render_status_card, render_profile
 from life_system import make_family, home_for_family, home_text, family_text, daily_life_event, advance_life_age
+from map_system import DIRECTIONS, generate_location_name, get_random_description
+from advanced_simulation import (ensure_advanced, daily_tick, advanced_status, city_economy_adv, work_day, train_skill, bank_deposit_adv, bank_withdraw_adv, take_loan_adv, meet_npc, relationship_action, commit_crime_adv, start_business_adv, run_business_adv, stock_trade_adv)
+from life_features import (ensure_data, education_text, study, bank_text, bank_deposit, bank_withdraw, bank_loan,
+    housing_text, rent_house, buy_house, vehicle_text, buy_vehicle, relationship_text, meet_partner, marry, have_child,
+    legal_text, commit_crime, pay_fine, hospital, business_text, start_business, run_business, stock_text, stock_trade,
+    tax_text, pay_tax, economic_tick, city_economy_text, serve_jail)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -45,19 +56,41 @@ WAITING_CITY = set()
 
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 
+# Render Web Service health server.
+# Telegram bot همچنان با polling کار می‌کند، اما Render باید یک پورت HTTP
+# روی 0.0.0.0 ببیند تا deploy و health check موفق شوند.
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path in ("/", "/health", "/healthz"):
+            body = b"OK - Iranian Life Simulator is running"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        return
+
+
+def start_render_health_server():
+    """Start a tiny HTTP server for Render health checks."""
+    port = int(os.getenv("PORT", "10000"))
+    server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, name="render-health", daemon=True)
+    thread.start()
+    logger.info("Render health server listening on 0.0.0.0:%s", port)
+    return server
+
 MALE_NAMES = ["پارسا", "آرین", "کیان", "سپهر", "نیما", "آرش", "رادین", "ایلیا", "مانی", "سینا", "رضا", "امیر"]
 FEMALE_NAMES = ["یسنا", "آوا", "هلیا", "نازنین", "سارا", "دنیا", "مهسا", "آیدا", "نیکا", "باران", "هستی", "کیمیا"]
 
 # فقط شهرهای ایران برای شروع
-IRAN_CITY_SET = set(IRAN_CITIES) if "IRAN_CITIES" in dir() else set()
-try:
-    from locations import IRAN_CITIES as _IC
-    IRAN_CITY_SET = set(_IC)
-except Exception:
-    IRAN_CITY_SET = {c for c in CITY_LIST if CITIES.get(c, {}).get("region", "").startswith("ایران") or c in [
-        "تهران", "اهواز", "مشهد", "اصفهان", "شیراز", "تبریز", "کرج", "رشت", "کرمانشاه", "قم",
-        "یزد", "کرمان", "ارومیه", "همدان", "ساری", "گرگان", "زاهدان", "بندرعباس", "بوشهر", "اردبیل"
-    ]}
+IRAN_CITY_SET = set(load_full_iran_cities(IRAN_CITIES))
+
 
 
 class BotPlayer:
@@ -75,7 +108,7 @@ class BotPlayer:
         self.family = random.choice(FAMILY_TYPES)
         self.home = "آپارتمان اجاره‌ای"
         self.birth_year = 1385
-        self.age_days = 100  # بازی قابل‌کنترل از ۱۰ سالگی آغاز می‌شود
+        self.age_days = 170  # بازی اصلی از ۱۷ سالگی آغاز می‌شود
         self.family_members = make_family(self.gender, self.family)
         self.home_data = home_for_family(self.family)
         self.home = self.home_data["type"]
@@ -93,6 +126,10 @@ class BotPlayer:
         self.bio = ""
         self.job = "بیکار"
         self.children = []
+        self.inventory = {}
+        self.life_data = {}
+        ensure_data(self)
+        ensure_advanced(self)
         self.alive = True
         self.pregnant = False
         self.pregnancy_days = 0
@@ -101,7 +138,7 @@ class BotPlayer:
 
     def status_text(self):
         return (
-            f"👤 {self.display_name} ({self.gender}) | سن: {max(10, self.age_days // 10)} سال\n"
+            f"👤 {self.display_name} ({self.gender}) | سن: {max(17, self.age_days // 10)} سال\n"
             f"🏙 {self.city} | {self.neighborhood}\n"
             f"💼 شغل: {self.job}\n"
             f"💰 {self.money:,} تومان\n"
@@ -109,6 +146,7 @@ class BotPlayer:
             f"🍖 گرسنگی: {self.hunger}% | 💧 تشنگی: {self.thirst}%\n"
             f"😴 خستگی: {self.fatigue}%\n"
             f"📍 {self.location}"
+            f"\n🎒 وسایل: {sum(self.inventory.values()) if self.inventory else 0} عدد"
         )
 
 
@@ -117,11 +155,49 @@ def main_keyboard():
         [
             ["وضعیت", "پروفایل"],
             ["خانه", "خانواده", "زندگی", "استراحت"],
-            ["شمال", "جنوب", "شرق", "غرب"],
+            ["🧭 حرکت"],
             ["شغل", "کار کن", "دعوا"],
-            ["زمان", "کمک"],
+            ["🏪 مغازه‌ها", "🎒 کوله‌پشتی"],
+            ["🏫 تحصیل", "🏦 بانک", "🏠 مسکن"],
+            ["🚗 وسایل نقلیه", "❤️ روابط", "⚖️ قانون"],
+            ["🏥 بیمارستان", "🏢 کسب‌وکار", "📈 بورس"],
+            ["🧾 مالیات", "شهرها", "سفر"],
+            ["🧠 زندگی هوشمند", "زمان", "کمک"],
         ],
         resize_keyboard=True,
+    )
+
+
+def movement_keyboard():
+    """پنل دکمه‌ای حرکت؛ کاربر دیگر لازم نیست جهت را تایپ کند."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬆️ شمال", callback_data="move:north"),
+        ],
+        [
+            InlineKeyboardButton("⬅️ غرب", callback_data="move:west"),
+            InlineKeyboardButton("🏠 خانه", callback_data="move:home"),
+            InlineKeyboardButton("➡️ شرق", callback_data="move:east"),
+        ],
+        [
+            InlineKeyboardButton("⬇️ جنوب", callback_data="move:south"),
+        ],
+        [
+            InlineKeyboardButton("🏪 مغازه‌ها", callback_data="shop:list"),
+        ],
+        [
+            InlineKeyboardButton("🔄 تازه‌سازی موقعیت", callback_data="move:panel"),
+        ],
+    ])
+
+
+def movement_text(player, gt):
+    return (
+        "🧭 **پنل حرکت**\n\n"
+        f"📍 مکان فعلی: {player.location}\n"
+        f"🏙 شهر: {player.city} | {player.neighborhood}\n"
+        f"📌 مختصات: ({player.x}, {player.y})\n\n"
+        "با دکمه‌های زیر حرکت کن:"
     )
 
 
@@ -172,13 +248,259 @@ async def start(update, context):
     await update.message.reply_text(
         f"سلام {user.first_name}!\n\n"
         f"به شبیه‌ساز زندگی یک ایرانی خوش اومدی.\n\n"
-        f"🎮 بازی از صفر شروع می‌شه:\n"
+        f"🎮 بازی اصلی از ۱۷ سالگی شروع می‌شه:\n"
         f"• جنسیت، پول، شغل و همه چیز رندوم از اول ساخته می‌شه\n\n"
         f"🏙 اول بگو می‌خوای تو کدوم **شهر ایران** باشی؟\n"
         f"فقط **نام شهر** را بنویس.\n\n"
         f"مثال:\nتهران\nاهواز\nمشهد\nاصفهان\nشیراز\nرشت\nتبریز\n...",
         reply_markup=ReplyKeyboardRemove(),
     )
+
+
+async def movement_callback(update, context):
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    player = get_player(uid)
+
+    if not player:
+        await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
+        return
+    if not player.alive:
+        await query.edit_message_text("💀 شخصیتت مرده. برای شروع دوباره /start را بزن.")
+        return
+
+    if uid not in GAME_TIMES:
+        GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
+    gt = GAME_TIMES[uid]
+    action = query.data.split(":", 1)[1]
+
+    if action == "panel":
+        await query.edit_message_text(movement_text(player, gt), reply_markup=movement_keyboard())
+        return
+
+    if action == "home":
+        player.location = "خانه"
+        await query.edit_message_text(
+            f"🏠 به خانه برگشتی.\n\n{movement_text(player, gt)}",
+            reply_markup=movement_keyboard(),
+        )
+        if PSYCOPG2_AVAILABLE:
+            try:
+                save_player(player)
+            except Exception:
+                pass
+        return
+
+    direction_map = {
+        "north": ("شمال", DIRECTIONS["شمال"]),
+        "south": ("جنوب", DIRECTIONS["جنوب"]),
+        "east": ("شرق", DIRECTIONS["شرق"]),
+        "west": ("غرب", DIRECTIONS["غرب"]),
+    }
+    direction, (dx, dy) = direction_map[action]
+
+    gt.advance(random.randint(15, 40))
+    player.x += dx
+    player.y += dy
+    player.location = generate_location_name(player.city, player.neighborhood)
+    player.fatigue = min(100, player.fatigue + random.randint(3, 8))
+    player.thirst = min(120, player.thirst + random.randint(2, 6))
+    player.hunger = min(120, player.hunger + random.randint(1, 5))
+
+    age_msgs = advance_life_age(player, gt.day)
+    smart_msgs = daily_tick(player, gt.day)
+    text = (
+        f"🚶 به سمت {direction} حرکت کردی.\n"
+        f"📍 {player.location}\n"
+        f"📌 مختصات جدید: ({player.x}, {player.y})\n"
+        f"📝 {get_random_description()}\n"
+        f"🕐 {gt.formatted()}"
+    )
+    if age_msgs:
+        text += "\n\n" + "\n".join(age_msgs)
+    if smart_msgs:
+        text += "\n\n" + "\n".join(smart_msgs[-3:])
+
+    if random.random() < 0.12:
+        fight_result = street_fight(player)
+        text += "\n\n" + fight_result
+
+    if not player.alive:
+        text += "\n\n💀 مردی! برای شروع مجدد /start بزن."
+
+    if PSYCOPG2_AVAILABLE:
+        try:
+            save_player(player)
+        except Exception:
+            pass
+
+    await query.edit_message_text(text + "\n\n" + movement_text(player, gt), reply_markup=movement_keyboard())
+
+
+
+def life_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏫 تحصیل", callback_data="life:education"), InlineKeyboardButton("📚 درس خواندن", callback_data="life:study")],
+        [InlineKeyboardButton("🏦 بانک", callback_data="life:bank"), InlineKeyboardButton("💰 واریز ۱ میلیون", callback_data="life:deposit1"), InlineKeyboardButton("💵 برداشت ۱ میلیون", callback_data="life:withdraw1")],
+        [InlineKeyboardButton("💳 وام", callback_data="life:loan")],
+        [InlineKeyboardButton("🏠 مسکن", callback_data="life:housing"), InlineKeyboardButton("🔑 اجاره", callback_data="life:rent"), InlineKeyboardButton("🏡 خرید خانه", callback_data="life:buyhouse")],
+        [InlineKeyboardButton("🚗 خودرو و موتور", callback_data="life:vehicles")],
+        [InlineKeyboardButton("❤️ روابط", callback_data="life:relationship"), InlineKeyboardButton("💞 آشنایی/قرار", callback_data="life:meet"), InlineKeyboardButton("💍 ازدواج", callback_data="life:marry")],
+        [InlineKeyboardButton("👶 فرزند", callback_data="life:child")],
+        [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data="life:legal"), InlineKeyboardButton("⚠️ جرم", callback_data="life:crime"), InlineKeyboardButton("💸 پرداخت جریمه", callback_data="life:fine")],
+        [InlineKeyboardButton("🔒 زندان", callback_data="life:jail")],
+        [InlineKeyboardButton("🏥 بیمارستان", callback_data="life:hospital"), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data="life:cityeconomy")],
+        [InlineKeyboardButton("🏢 کسب‌وکار", callback_data="life:business"), InlineKeyboardButton("🚀 راه‌اندازی", callback_data="life:startbiz"), InlineKeyboardButton("📊 فعالیت", callback_data="life:runbiz")],
+        [InlineKeyboardButton("📈 بورس", callback_data="life:stocks"), InlineKeyboardButton("🧾 مالیات", callback_data="life:tax"), InlineKeyboardButton("💳 پرداخت مالیات", callback_data="life:paytax")],
+        [InlineKeyboardButton("🧠 وضعیت عمیق", callback_data="life:advanced"), InlineKeyboardButton("🤝 آشنایی", callback_data="life:advmeet")],
+        [InlineKeyboardButton("💼 یک روز کار", callback_data="life:advwork"), InlineKeyboardButton("📚 آموزش مهارت", callback_data="life:advtrain")],
+        [InlineKeyboardButton("🏦 واریز ۱۰ میلیون", callback_data="life:advdeposit"), InlineKeyboardButton("💳 وام ۱۰ میلیون", callback_data="life:advloan")],
+        [InlineKeyboardButton("🏢 کسب‌وکار پیشرفته", callback_data="life:advbiz")],
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data="move:panel")],
+    ])
+
+
+def life_trade_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 خرید فولاد", callback_data="life:buy:فولاد"), InlineKeyboardButton("📉 فروش فولاد", callback_data="life:sell:فولاد")],
+        [InlineKeyboardButton("📈 خرید خودرو", callback_data="life:buy:خودرو"), InlineKeyboardButton("📉 فروش خودرو", callback_data="life:sell:خودرو")],
+        [InlineKeyboardButton("📈 خرید فناوری", callback_data="life:buy:فناوری"), InlineKeyboardButton("📉 فروش فناوری", callback_data="life:sell:فناوری")],
+        [InlineKeyboardButton("📈 خرید بانک", callback_data="life:buy:بانک"), InlineKeyboardButton("📉 فروش بانک", callback_data="life:sell:بانک")],
+        [InlineKeyboardButton("⬅️ برگشت", callback_data="life:menu")],
+    ])
+
+
+async def life_callback(update, context):
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    player = get_player(uid)
+    if not player or not player.alive:
+        await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
+        return
+    if uid not in GAME_TIMES:
+        GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
+    gt = GAME_TIMES[uid]
+    action = query.data.split(":")
+    key = action[1] if len(action) > 1 else "menu"
+    text = ""
+    markup = life_keyboard()
+    if key == "menu": text = "🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:" 
+    elif key == "use": text = use_item(player, action[2])[1] if len(action)>2 else "❌ آیتم مشخص نیست."
+    elif key == "advanced": text = advanced_status(player) + "\n\n" + city_economy_adv(player)
+    elif key == "advmeet": text = meet_npc(player)
+    elif key == "advwork": text = work_day(player, overtime=False)
+    elif key == "advtrain": text = train_skill(player, "ارتباطات", 2)
+    elif key == "advdeposit": text = bank_deposit_adv(player, 10_000_000, savings=True)
+    elif key == "advloan": text = take_loan_adv(player, 10_000_000)
+    elif key == "advbiz": text = start_business_adv(player, "کسب‌وکار محلی") if not ensure_advanced(player)["businesses"] else run_business_adv(player)
+    elif key == "education": text = education_text(player)
+    elif key == "study": text = study(player, gt)
+    elif key == "bank": text = bank_text(player)
+    elif key == "deposit1": text = bank_deposit(player, 1_000_000)
+    elif key == "withdraw1": text = bank_withdraw(player, 1_000_000)
+    elif key == "loan": text = bank_loan(player)
+    elif key == "housing": text = housing_text(player)
+    elif key == "rent": text = rent_house(player)
+    elif key == "buyhouse": text = buy_house(player)
+    elif key == "vehicles": text = vehicle_text(player)
+    elif key == "buyvehicle": text = buy_vehicle(player, action[2]) if len(action) > 2 else vehicle_text(player)
+    elif key == "relationship": text = relationship_text(player)
+    elif key == "meet": text = meet_partner(player)
+    elif key == "marry": text = marry(player)
+    elif key == "child": text = have_child(player)
+    elif key == "legal": text = legal_text(player)
+    elif key == "crime": text = commit_crime(player)
+    elif key == "fine": text = pay_fine(player)
+    elif key == "hospital": text = hospital(player)
+    elif key == "cityeconomy": text = city_economy_text(player)
+    elif key == "jail": text = serve_jail(player)
+    elif key == "business": text = business_text(player)
+    elif key == "startbiz": text = start_business(player)
+    elif key == "runbiz": text = run_business(player)
+    elif key == "stocks": text = stock_text(player); markup = life_trade_keyboard()
+    elif key == "buy": text = stock_trade(player, action[2], True); markup = life_trade_keyboard()
+    elif key == "sell": text = stock_trade(player, action[2], False); markup = life_trade_keyboard()
+    elif key == "tax": text = tax_text(player)
+    elif key == "paytax": text = pay_tax(player)
+    else: text = "🌍 سیستم زندگی"
+    economic_tick(player, gt.day)
+    daily_tick(player, gt.day)
+    if PSYCOPG2_AVAILABLE:
+        try: save_player(player)
+        except Exception: pass
+    await query.edit_message_text(text + "\n\n" + ("روز بازی: " + str(gt.day + 1)), reply_markup=markup)
+
+
+def shop_keyboard():
+    rows = []
+    for i, (name, data) in enumerate(SHOPS.items()):
+        rows.append([InlineKeyboardButton(f"{data['icon']} {name}", callback_data=f"shop:open:{i}")])
+    rows.append([InlineKeyboardButton("⬅️ برگشت به حرکت", callback_data="move:panel")])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_items_keyboard(shop_name):
+    shop = SHOPS[shop_name]
+    shop_i = list(SHOPS.keys()).index(shop_name)
+    rows = []
+    for item_i, (item, (price, _)) in enumerate(shop["items"].items()):
+        rows.append([InlineKeyboardButton(f"{item} — {price:,} تومان", callback_data=f"shop:buy:{shop_i}:{item_i}")])
+    rows.append([InlineKeyboardButton("⬅️ مغازه‌ها", callback_data="shop:list")])
+    return InlineKeyboardMarkup(rows)
+
+
+def shop_text(shop_name, player):
+    shop = SHOPS[shop_name]
+    lines = [f"{shop['icon']} **{shop_name}**", f"💰 پول: {player.money:,} تومان", "", "کالا را انتخاب کن:"]
+    for item, (price, _) in shop["items"].items():
+        lines.append(f"• {item}: {price:,} تومان")
+    return "\n".join(lines)
+
+
+async def shop_callback(update, context):
+    if update.effective_chat and update.effective_chat.type != "private":
+        return
+    query = update.callback_query
+    await query.answer()
+    uid = str(query.from_user.id)
+    player = get_player(uid)
+    if not player or not player.alive:
+        await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
+        return
+    parts = query.data.split(":", 2)
+    if len(parts) < 2:
+        return
+    action = parts[1]
+    if action == "list":
+        await query.edit_message_text(shop_list_text(), reply_markup=shop_keyboard())
+        return
+    if action == "open" and len(parts) == 3:
+        try:
+            shop_name = list(SHOPS.keys())[int(parts[2])]
+        except Exception:
+            await query.edit_message_text("❌ مغازه پیدا نشد.", reply_markup=shop_keyboard())
+            return
+        await query.edit_message_text(shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name))
+        return
+    if action == "buy" and len(parts) == 3:
+        try:
+            shop_i, item_i = map(int, parts[2].split(":", 1))
+            shop_name = list(SHOPS.keys())[shop_i]
+            item_name = list(SHOPS[shop_name]["items"].keys())[item_i]
+        except Exception:
+            await query.edit_message_text("❌ اطلاعات خرید نامعتبر است.", reply_markup=shop_keyboard())
+            return
+        ok, msg = buy_item(player, shop_name, item_name)
+        if PSYCOPG2_AVAILABLE:
+            try: save_player(player)
+            except Exception: pass
+        await query.edit_message_text(msg + "\n\n" + shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name))
 
 
 async def help_cmd(update, context):
@@ -188,13 +510,21 @@ async def help_cmd(update, context):
         "وضعیت / پروفایل\n"
         "خانه / خانواده / زندگی → مدیریت و مشاهده زندگی\n"
         "استراحت → استراحت در خانه\n"
-        "شمال جنوب شرق غرب → حرکت\n"
+        "🧭 حرکت → باز کردن پنل دکمه‌ای حرکت\n"
         "شغل → لیست شغل‌ها\n"
         "انتخاب شغل نام_شغل\n"
         "کار کن → کار کردن\n"
         "دعوا → دعوای خیابانی\n"
-        "زمان\n\n"
-        "⚠️ اگر مردی، دوباره /start بزن تا از صفر شروع کنی."
+        "🏪 مغازه‌ها → ورود به مغازه و خرید\n"
+        "🎒 کوله‌پشتی → وسایل خریداری‌شده\n"
+        "شهرها → فهرست شهرهای ایران\n"
+        "سفر نام شهر → سفر به شهر دیگر\n"
+        "زمان\n"
+        "🏫 تحصیل / 🏦 بانک / 🏠 مسکن / 🚗 خودرو\n"
+        "❤️ روابط / 👶 فرزند / ⚖️ قانون / 🏥 بیمارستان\n"
+        "🏢 کسب‌وکار / 📈 بورس / 🧾 مالیات / 🏙 اقتصاد شهر\n\n"
+        "⏳ هر ۱۰ روز بازی = ۱ سال زندگی.\n"
+        "⚠️ اگر مردی، دوباره /start بزن تا یک زندگی جدید بسازی."
     )
 
 
@@ -221,6 +551,9 @@ async def handle_message(update, context):
         player = create_fresh_player(uid, name=user.first_name, city=city)
         WAITING_CITY.discard(uid)
 
+        # کیبورد پایین صفحه فقط در چت خصوصی نمایش داده شود؛
+        # در گروه‌ها پیام‌ها عادی ارسال می‌شوند و Reply Keyboard ساخته نمی‌شود.
+        markup = main_keyboard() if update.effective_chat and update.effective_chat.type == "private" else None
         await update.message.reply_text(
             f"👶 تو در ۰ سالگی به دنیا اومدی.\n\n"
             f"🏙 شهر: {player.city}\n"
@@ -229,10 +562,10 @@ async def handle_message(update, context):
             f"🏠 خانه: {player.home}\n\n"
             f"{family_text(player)}\n\n"
             f"📖 چند سال اول زندگی‌ات در کنار خانواده گذشت؛ رشد کردی، محیط اطرافت را شناختی و شخصیتت شکل گرفت.\n\n"
-            f"🎂 حالا داستان اصلی از ۱۰ سالگی شروع می‌شود.\n"
+            f"🎂 حالا داستان اصلی از ۱۷ سالگی شروع می‌شود.\n"
             f"⏳ از اینجا به بعد هر ۱۰ روز بازی = ۱ سال زندگی.\n\n"
             f"{player.status_text()}",
-            reply_markup=main_keyboard(),
+            reply_markup=markup,
         )
         return
 
@@ -259,7 +592,120 @@ async def handle_message(update, context):
         GAME_TIMES[user.id] = GameTime(start_hour=random.randint(7, 20))
     gt = GAME_TIMES[user.id]
 
+    # بازیکن زندانی فقط می‌تواند یک روز از محکومیتش را بگذراند یا وضعیت قانون را ببیند.
+    jail_days = ensure_data(player)["legal"].get("jail_days", 0)
+    if jail_days > 0 and text not in ["⚖️ قانون", "قانون", "پلیس", "🔒 زندان", "زندگی", "life"]:
+        await update.message.reply_text(f"🔒 در زندان هستی. روزهای باقی‌مانده: {jail_days}\nبرای گذراندن یک روز، دکمه «زندان» را بزن.", reply_markup=life_keyboard())
+        return
+
     reply = None
+
+    if text in ["🏫 تحصیل", "تحصیل", "زندگی پیشرفته", "🌍 زندگی"]:
+        await update.message.reply_text("🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:", reply_markup=life_keyboard())
+        return
+
+    if text in ["🧠 زندگی هوشمند", "زندگی هوشمند", "هوش"]:
+        await update.message.reply_text(
+            advanced_status(player) + "\n\n" + city_economy_adv(player),
+            reply_markup=life_keyboard()
+        )
+        return
+
+    if text in ["🏦 بانک", "بانک", "bank"]:
+        await update.message.reply_text(bank_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🏠 مسکن", "مسکن", "خانه و ملک"]:
+        await update.message.reply_text(housing_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🚗 وسایل نقلیه", "وسایل نقلیه", "خودرو", "ماشین"]:
+        await update.message.reply_text(vehicle_text(player), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏍️ موتور", callback_data="life:buyvehicle:موتورسیکلت")],[InlineKeyboardButton("🚗 خودروی اقتصادی", callback_data="life:buyvehicle:خودرو اقتصادی")],[InlineKeyboardButton("🚙 خودروی خانوادگی", callback_data="life:buyvehicle:خودرو خانوادگی")],[InlineKeyboardButton("⬅️ برگشت", callback_data="life:menu")]]))
+        return
+
+    if text in ["❤️ روابط", "روابط", "ازدواج"]:
+        await update.message.reply_text(relationship_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["⚖️ قانون", "قانون", "پلیس"]:
+        await update.message.reply_text(legal_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🏥 بیمارستان", "بیمارستان"]:
+        await update.message.reply_text(hospital(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🏢 کسب‌وکار", "کسب و کار", "کسب‌وکار"]:
+        await update.message.reply_text(business_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["📈 بورس", "بورس", "سهام"]:
+        await update.message.reply_text(stock_text(player), reply_markup=life_trade_keyboard())
+        return
+
+    if text in ["🏙 اقتصاد شهر", "اقتصاد شهر"]:
+        await update.message.reply_text(city_economy_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🧾 مالیات", "مالیات"]:
+        await update.message.reply_text(tax_text(player), reply_markup=life_keyboard())
+        return
+
+    if text in ["🏪 مغازه‌ها", "مغازه‌ها", "مغازه", "shop"]:
+        await update.message.reply_text(shop_list_text(), reply_markup=shop_keyboard())
+        return
+
+    if text in ["🎒 کوله‌پشتی", "کوله‌پشتی", "کیف", "inventory"]:
+        inv = getattr(player, "inventory", {}) or {}
+        if not inv:
+            reply = "🎒 کوله‌پشتی خالیه."
+            markup = None
+        else:
+            reply = "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k,v in inv.items())
+            rows = []
+            for item, qty in inv.items():
+                rows.append([InlineKeyboardButton(f"استفاده: {item} ×{qty}", callback_data=f"life:use:{item}")])
+            markup = InlineKeyboardMarkup(rows)
+        await update.message.reply_text(reply, reply_markup=markup)
+        return
+
+    if text in ["شهرها", "cities"]:
+        cities = sorted(IRAN_CITY_SET)
+        reply = f"🏙 فهرست شهرهای ایران: {len(cities)} شهر در دادهٔ فعال\n\n" + "، ".join(cities[:80]) + "\n\nبرای سفر: «سفر نام شهر»"
+        await update.message.reply_text(reply)
+        return
+
+    if text.startswith("سفر "):
+        target = find_iran_city(text[5:].strip())
+        if not target:
+            reply = "❌ شهر مقصد پیدا نشد. دستور «شهرها» را ببین یا نام شهر را دقیق‌تر بنویس."
+        elif target == player.city:
+            reply = f"📍 همین الان در {target} هستی."
+        else:
+            cost = hard_cost(random.randint(150_000, 1_500_000))
+            if player.money < cost:
+                reply = f"💸 پول کافی برای سفر نداری. هزینه تقریبی: {cost:,} تومان"
+            else:
+                player.money -= cost
+                player.city = target
+                city_data = CITIES.get(target, {})
+                player.neighborhood = random.choice(city_data.get("neighborhoods", ["مرکز شهر"]))
+                player.location = "ترمینال / ایستگاه ورودی شهر"
+                gt.advance(random.randint(180, 480))
+                age_msgs = advance_life_age(player, gt.day)
+                smart_msgs = daily_tick(player, gt.day)
+                reply = f"🚌 به {target} سفر کردی.\n💸 هزینه سفر: {cost:,} تومان\n📍 {player.neighborhood}\n💰 موجودی: {player.money:,} تومان"
+                if age_msgs: reply += "\n\n" + "\n".join(age_msgs)
+                if smart_msgs: reply += "\n\n" + "\n".join(smart_msgs[-3:])
+            if PSYCOPG2_AVAILABLE:
+                try: save_player(player)
+                except Exception: pass
+            await update.message.reply_text(reply)
+            return
+
+    if text in ["🧭 حرکت", "حرکت", "move"]:
+        await update.message.reply_text(movement_text(player, gt), reply_markup=movement_keyboard())
+        return
 
     if text in ["خانه", "خونه", "home"]:
         reply = home_text(player)
@@ -275,6 +721,8 @@ async def handle_message(update, context):
         reply += "\n" + daily_life_event(player)
         for msg in advance_life_age(player, gt.day):
             reply += "\n" + msg
+        for msg in daily_tick(player, gt.day):
+            reply += "\n" + msg
     if text in ["وضعیت", "status"]:
         reply = render_status_card(player, gt)
 
@@ -285,6 +733,7 @@ async def handle_message(update, context):
         old_day = gt.day
         gt.advance(random.randint(15, 40))
         age_msgs = advance_life_age(player, gt.day)
+        smart_msgs = daily_tick(player, gt.day)
         player.fatigue = min(100, player.fatigue + random.randint(3, 8))
         player.thirst = min(120, player.thirst + random.randint(2, 6))
         player.hunger = min(120, player.hunger + random.randint(1, 5))
@@ -293,6 +742,8 @@ async def handle_message(update, context):
         reply = f"رفتی سمت {text}.\n📍 {player.location}\n🕐 {gt.formatted()}"
         if age_msgs:
             reply += "\n\n" + "\n".join(age_msgs)
+        if smart_msgs:
+            reply += "\n\n" + "\n".join(smart_msgs[-3:])
         if random.random() < 0.12:
             reply += "\n\n" + street_fight(player)
         # چک مرگ بعد از دعوا
@@ -362,6 +813,15 @@ async def handle_message(update, context):
 
 
 def main_bot():
+    # On Render this process is deployed as a Web Service so the health endpoint
+    # keeps the service observable while the Telegram polling loop runs.
+    health_server = None
+    if os.getenv("RENDER") or os.getenv("PORT"):
+        try:
+            health_server = start_render_health_server()
+        except OSError as e:
+            logger.error("Render health server could not start: %s", e)
+
     if not TELEGRAM_AVAILABLE:
         print("python-telegram-bot نصب نیست.")
         return
@@ -376,9 +836,12 @@ def main_bot():
             print("DB init:", e)
 
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:", chat_types=["private"]))
+    app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:", chat_types=["private"]))
+    app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:", chat_types=["private"]))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("ربات شروع شد...")
     app.run_polling()

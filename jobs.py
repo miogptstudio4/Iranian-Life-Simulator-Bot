@@ -3,6 +3,9 @@
 سیستم شغل
 """
 
+import random
+from difficulty import hard_reward, hard_damage
+
 JOBS = {
     "بیکار": {
         "salary_min": 0, "salary_max": 0,
@@ -11,47 +14,47 @@ JOBS = {
     },
     "پیک موتوری": {
         "salary_min": 8_000_000, "salary_max": 18_000_000,
-        "energy_cost": 25, "required_age_days": 6500,
+        "energy_cost": 25, "required_age_days": 180,
         "description": "با موتور بسته جابه‌جا می‌کنی. خطر تصادف بالاست"
     },
     "کارگر ساختمانی": {
         "salary_min": 10_000_000, "salary_max": 22_000_000,
-        "energy_cost": 35, "required_age_days": 6500,
+        "energy_cost": 35, "required_age_days": 180,
         "description": "کار سخت فیزیکی. کمر درد تضمینیه"
     },
     "فروشنده مغازه": {
         "salary_min": 9_000_000, "salary_max": 16_000_000,
-        "energy_cost": 15, "required_age_days": 6000,
+        "energy_cost": 15, "required_age_days": 170,
         "description": "پشت پیشخوان ایستادی و مشتری‌داری"
     },
     "راننده اسنپ": {
         "salary_min": 12_000_000, "salary_max": 28_000_000,
-        "energy_cost": 20, "required_age_days": 7000,
+        "energy_cost": 20, "required_age_days": 180,
         "description": "با ماشین مسافرکشی. بنزین گرونه"
     },
     "کارمند اداره": {
         "salary_min": 15_000_000, "salary_max": 25_000_000,
-        "energy_cost": 10, "required_age_days": 8000,
+        "energy_cost": 10, "required_age_days": 180,
         "description": "کار دولتی. امنیت شغلی نسبی"
     },
     "معلم": {
         "salary_min": 14_000_000, "salary_max": 24_000_000,
-        "energy_cost": 18, "required_age_days": 9000,
+        "energy_cost": 18, "required_age_days": 220,
         "description": "تدریس در مدرسه. صبر زیادی می‌خواد"
     },
     "برنامه‌نویس": {
         "salary_min": 30_000_000, "salary_max": 80_000_000,
-        "energy_cost": 15, "required_age_days": 9000,
+        "energy_cost": 15, "required_age_days": 220,
         "description": "دورکاری یا شرکتی. درآمد خوب اما رقابت شدید"
     },
     "پزشک": {
         "salary_min": 50_000_000, "salary_max": 150_000_000,
-        "energy_cost": 30, "required_age_days": 12000,
+        "energy_cost": 30, "required_age_days": 240,
         "description": "درآمد بالا اما مسئولیت و استرس خیلی زیاد"
     },
     "کاسب": {
         "salary_min": 5_000_000, "salary_max": 100_000_000,
-        "energy_cost": 20, "required_age_days": 7000,
+        "energy_cost": 20, "required_age_days": 180,
         "description": "مغازه خودت. سود و زیان دست خودته"
     },
 }
@@ -68,7 +71,7 @@ def can_take_job(char, job_name: str) -> tuple:
     if not job:
         return False, "این شغل وجود نداره"
     if char.age_days < job["required_age_days"]:
-        years_needed = job["required_age_days"] // 365
+        years_needed = job["required_age_days"] // 10
         return False, f"حداقل سن تقریبی برای این شغل حدود {years_needed} سالگیه"
     if char.health < 30:
         return False, "سلامتت برای کار کردن خیلی پایینه"
@@ -79,12 +82,11 @@ def work(char, job_name: str) -> str:
     if not ok:
         return msg
     job = JOBS[job_name]
-    import random
-    earned = random.randint(job["salary_min"], job["salary_max"])
+    earned = hard_reward(random.randint(job["salary_min"], job["salary_max"]))
     char.money += earned
-    char.fatigue = min(100, char.fatigue + job["energy_cost"])
-    char.hunger = min(120, char.hunger + random.randint(5, 12))
-    char.thirst = min(120, char.thirst + random.randint(5, 10))
+    char.fatigue = min(100, char.fatigue + hard_damage(job["energy_cost"]))
+    char.hunger = min(120, char.hunger + hard_damage(random.randint(5, 12)))
+    char.thirst = min(120, char.thirst + hard_damage(random.randint(5, 10)))
     if char.fatigue > 90:
-        char.health = max(0, char.health - random.randint(5, 15))
+        char.health = max(0, char.health - hard_damage(random.randint(5, 15)))
     return f"✅ کار کردی و {earned:,} تومان درآوردی.\nخستگی و گرسنگی‌ت بیشتر شد."
