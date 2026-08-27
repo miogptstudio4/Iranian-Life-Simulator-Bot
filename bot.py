@@ -1039,9 +1039,7 @@ def main_bot():
     app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:"))
-    # Text commands work in private chats and groups. For groups, Telegram privacy mode
-    # may need to be disabled in BotFather if you want arbitrary non-command text.
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    # فقط دستورات و دکمه‌های Inline پردازش می‌شوند؛ پیام‌های عادی نادیده گرفته می‌شوند.
 
     print("ربات شروع شد...")
     app.run_polling()
