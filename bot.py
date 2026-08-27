@@ -168,25 +168,25 @@ def main_keyboard():
     )
 
 
-def movement_keyboard():
+def movement_keyboard(owner_id: str | None = None):
     """پنل دکمه‌ای حرکت؛ کاربر دیگر لازم نیست جهت را تایپ کند."""
     return InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("⬆️ شمال", callback_data="move:north"),
+            InlineKeyboardButton("⬆️ شمال", callback_data=_owner_callback("move", owner_id, "north")),
         ],
         [
-            InlineKeyboardButton("⬅️ غرب", callback_data="move:west"),
-            InlineKeyboardButton("🏠 خانه", callback_data="move:home"),
-            InlineKeyboardButton("➡️ شرق", callback_data="move:east"),
+            InlineKeyboardButton("⬅️ غرب", callback_data=_owner_callback("move", owner_id, "west")),
+            InlineKeyboardButton("🏠 خانه", callback_data=_owner_callback("move", owner_id, "home")),
+            InlineKeyboardButton("➡️ شرق", callback_data=_owner_callback("move", owner_id, "east")),
         ],
         [
-            InlineKeyboardButton("⬇️ جنوب", callback_data="move:south"),
+            InlineKeyboardButton("⬇️ جنوب", callback_data=_owner_callback("move", owner_id, "south")),
         ],
         [
-            InlineKeyboardButton("🏪 مغازه‌ها", callback_data="shop:list"),
+            InlineKeyboardButton("🏪 مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list")),
         ],
         [
-            InlineKeyboardButton("🔄 تازه‌سازی موقعیت", callback_data="move:panel"),
+            InlineKeyboardButton("🔄 تازه‌سازی موقعیت", callback_data=_owner_callback("move", owner_id, "panel")),
         ],
     ])
 
@@ -203,6 +203,67 @@ def movement_text(player, gt):
 
 def get_player(user_id: str):
     return PLAYERS.get(str(user_id))
+
+
+def get_or_load_player(user_id: str):
+    """Get the in-memory player or restore it from PostgreSQL after a restart."""
+    uid = str(user_id)
+    player = PLAYERS.get(uid)
+    if player:
+        return player
+    if PSYCOPG2_AVAILABLE:
+        try:
+            data = load_player_by_numeric_id(uid)
+            if data:
+                player = BotPlayer(uid, name=data.get("name"), city=data.get("city"))
+                apply_loaded_data(player, data)
+                PLAYERS[uid] = player
+                if uid not in GAME_TIMES:
+                    GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
+                return player
+        except Exception as exc:
+            logger.warning("Could not restore player %s: %s", uid, exc)
+    return None
+
+
+def _owner_callback(prefix: str, owner_id: str | None, *parts: str) -> str:
+    """Build callback data. Group panels carry the owner's Telegram ID."""
+    values = [prefix]
+    if owner_id:
+        values.append(str(owner_id))
+    values.extend(str(x) for x in parts)
+    return ":".join(values)
+
+
+def _callback_owner_and_parts(data: str, prefix: str):
+    parts = data.split(":")
+    if not parts or parts[0] != prefix:
+        return None, []
+    # New group-safe form: prefix:telegram_user_id:action...
+    if len(parts) >= 3 and parts[1].isdigit():
+        return parts[1], parts[2:]
+    # Legacy private form: prefix:action...
+    return None, parts[1:]
+
+
+def _is_authorized_panel(query, owner_id: str | None) -> bool:
+    if owner_id is None:
+        return True
+    return str(query.from_user.id) == str(owner_id)
+
+
+def group_panel_keyboard(owner_id: str):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 وضعیت من", callback_data=_owner_callback("life", owner_id, "status")),
+         InlineKeyboardButton("👤 پروفایل", callback_data=_owner_callback("life", owner_id, "profile"))],
+        [InlineKeyboardButton("🧭 حرکت", callback_data=_owner_callback("move", owner_id, "panel")),
+         InlineKeyboardButton("🌍 زندگی", callback_data=_owner_callback("life", owner_id, "menu"))],
+        [InlineKeyboardButton("🏪 مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list")),
+         InlineKeyboardButton("🎒 کوله‌پشتی", callback_data=_owner_callback("life", owner_id, "inventory"))],
+        [InlineKeyboardButton("💼 کار", callback_data=_owner_callback("life", owner_id, "advwork")),
+         InlineKeyboardButton("😴 استراحت", callback_data=_owner_callback("life", owner_id, "rest"))],
+        [InlineKeyboardButton("🔄 تازه‌سازی", callback_data=_owner_callback("life", owner_id, "panel"))],
+    ])
 
 
 def create_fresh_player(user_id: str, name: str = None, city: str = None) -> BotPlayer:
@@ -253,17 +314,19 @@ async def start(update, context):
         f"🏙 اول بگو می‌خوای تو کدوم **شهر ایران** باشی؟\n"
         f"فقط **نام شهر** را بنویس.\n\n"
         f"مثال:\nتهران\nاهواز\nمشهد\nاصفهان\nشیراز\nرشت\nتبریز\n...",
-        reply_markup=ReplyKeyboardRemove(),
+        reply_markup=ReplyKeyboardRemove() if update.effective_chat.type == "private" else None,
     )
 
 
 async def movement_callback(update, context):
-    if update.effective_chat and update.effective_chat.type != "private":
-        return
     query = update.callback_query
+    owner_id, parts = _callback_owner_and_parts(query.data, "move")
+    if not _is_authorized_panel(query, owner_id):
+        await query.answer("⛔ این پنل برای بازیکن دیگری است.", show_alert=True)
+        return
     await query.answer()
     uid = str(query.from_user.id)
-    player = get_player(uid)
+    player = get_or_load_player(uid)
 
     if not player:
         await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
@@ -275,17 +338,17 @@ async def movement_callback(update, context):
     if uid not in GAME_TIMES:
         GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
     gt = GAME_TIMES[uid]
-    action = query.data.split(":", 1)[1]
+    action = parts[0] if parts else "panel"
 
     if action == "panel":
-        await query.edit_message_text(movement_text(player, gt), reply_markup=movement_keyboard())
+        await query.edit_message_text(movement_text(player, gt), reply_markup=movement_keyboard(owner_id))
         return
 
     if action == "home":
         player.location = "خانه"
         await query.edit_message_text(
             f"🏠 به خانه برگشتی.\n\n{movement_text(player, gt)}",
-            reply_markup=movement_keyboard(),
+            reply_markup=movement_keyboard(owner_id),
         )
         if PSYCOPG2_AVAILABLE:
             try:
@@ -301,7 +364,7 @@ async def movement_callback(update, context):
         "west": ("غرب", DIRECTIONS["غرب"]),
     }
     if action not in direction_map:
-        await query.edit_message_text("❌ جهت نامعتبر است.", reply_markup=movement_keyboard())
+        await query.edit_message_text("❌ جهت نامعتبر است.", reply_markup=movement_keyboard(owner_id))
         return
     direction, (dx, dy) = direction_map[action]
 
@@ -340,61 +403,80 @@ async def movement_callback(update, context):
         except Exception:
             pass
 
-    await query.edit_message_text(text + "\n\n" + movement_text(player, gt), reply_markup=movement_keyboard())
+    await query.edit_message_text(text + "\n\n" + movement_text(player, gt), reply_markup=movement_keyboard(owner_id))
 
 
 
-def life_keyboard():
+def life_keyboard(owner_id: str | None = None):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏫 تحصیل", callback_data="life:education"), InlineKeyboardButton("📚 درس خواندن", callback_data="life:study")],
-        [InlineKeyboardButton("🏦 بانک", callback_data="life:bank"), InlineKeyboardButton("💰 واریز ۱ میلیون", callback_data="life:deposit1"), InlineKeyboardButton("💵 برداشت ۱ میلیون", callback_data="life:withdraw1")],
-        [InlineKeyboardButton("💳 وام", callback_data="life:loan")],
-        [InlineKeyboardButton("🏠 مسکن", callback_data="life:housing"), InlineKeyboardButton("🔑 اجاره", callback_data="life:rent"), InlineKeyboardButton("🏡 خرید خانه", callback_data="life:buyhouse")],
-        [InlineKeyboardButton("🚗 خودرو و موتور", callback_data="life:vehicles")],
-        [InlineKeyboardButton("❤️ روابط", callback_data="life:relationship"), InlineKeyboardButton("💞 آشنایی/قرار", callback_data="life:meet"), InlineKeyboardButton("💍 ازدواج", callback_data="life:marry")],
-        [InlineKeyboardButton("👶 فرزند", callback_data="life:child")],
-        [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data="life:legal"), InlineKeyboardButton("⚠️ جرم", callback_data="life:crime"), InlineKeyboardButton("💸 پرداخت جریمه", callback_data="life:fine")],
-        [InlineKeyboardButton("🔒 زندان", callback_data="life:jail")],
-        [InlineKeyboardButton("🏥 بیمارستان", callback_data="life:hospital"), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data="life:cityeconomy")],
-        [InlineKeyboardButton("🏢 کسب‌وکار", callback_data="life:business"), InlineKeyboardButton("🚀 راه‌اندازی", callback_data="life:startbiz"), InlineKeyboardButton("📊 فعالیت", callback_data="life:runbiz")],
-        [InlineKeyboardButton("📈 بورس", callback_data="life:stocks"), InlineKeyboardButton("🧾 مالیات", callback_data="life:tax"), InlineKeyboardButton("💳 پرداخت مالیات", callback_data="life:paytax")],
-        [InlineKeyboardButton("🧠 وضعیت عمیق", callback_data="life:advanced"), InlineKeyboardButton("🤝 آشنایی", callback_data="life:advmeet")],
-        [InlineKeyboardButton("💼 یک روز کار", callback_data="life:advwork"), InlineKeyboardButton("📚 آموزش مهارت", callback_data="life:advtrain")],
-        [InlineKeyboardButton("🏦 واریز ۱۰ میلیون", callback_data="life:advdeposit"), InlineKeyboardButton("💳 وام ۱۰ میلیون", callback_data="life:advloan")],
-        [InlineKeyboardButton("🏢 کسب‌وکار پیشرفته", callback_data="life:advbiz")],
-        [InlineKeyboardButton("⬅️ بازگشت", callback_data="move:panel")],
+        [InlineKeyboardButton("🏫 تحصیل", callback_data=_owner_callback("life", owner_id, "education")), InlineKeyboardButton("📚 درس خواندن", callback_data=_owner_callback("life", owner_id, "study"))],
+        [InlineKeyboardButton("🏦 بانک", callback_data=_owner_callback("life", owner_id, "bank")), InlineKeyboardButton("💰 واریز ۱ میلیون", callback_data=_owner_callback("life", owner_id, "deposit1")), InlineKeyboardButton("💵 برداشت ۱ میلیون", callback_data=_owner_callback("life", owner_id, "withdraw1"))],
+        [InlineKeyboardButton("💳 وام", callback_data=_owner_callback("life", owner_id, "loan"))],
+        [InlineKeyboardButton("🏠 مسکن", callback_data=_owner_callback("life", owner_id, "housing")), InlineKeyboardButton("🔑 اجاره", callback_data=_owner_callback("life", owner_id, "rent")), InlineKeyboardButton("🏡 خرید خانه", callback_data=_owner_callback("life", owner_id, "buyhouse"))],
+        [InlineKeyboardButton("🚗 خودرو و موتور", callback_data=_owner_callback("life", owner_id, "vehicles"))],
+        [InlineKeyboardButton("❤️ روابط", callback_data=_owner_callback("life", owner_id, "relationship")), InlineKeyboardButton("💞 آشنایی/قرار", callback_data=_owner_callback("life", owner_id, "meet")), InlineKeyboardButton("💍 ازدواج", callback_data=_owner_callback("life", owner_id, "marry"))],
+        [InlineKeyboardButton("👶 فرزند", callback_data=_owner_callback("life", owner_id, "child"))],
+        [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data=_owner_callback("life", owner_id, "legal")), InlineKeyboardButton("⚠️ جرم", callback_data=_owner_callback("life", owner_id, "crime")), InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
+        [InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
+        [InlineKeyboardButton("🏥 بیمارستان", callback_data=_owner_callback("life", owner_id, "hospital")), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data=_owner_callback("life", owner_id, "cityeconomy"))],
+        [InlineKeyboardButton("🏢 کسب‌وکار", callback_data=_owner_callback("life", owner_id, "business")), InlineKeyboardButton("🚀 راه‌اندازی", callback_data=_owner_callback("life", owner_id, "startbiz")), InlineKeyboardButton("📊 فعالیت", callback_data=_owner_callback("life", owner_id, "runbiz"))],
+        [InlineKeyboardButton("📈 بورس", callback_data=_owner_callback("life", owner_id, "stocks")), InlineKeyboardButton("🧾 مالیات", callback_data=_owner_callback("life", owner_id, "tax")), InlineKeyboardButton("💳 پرداخت مالیات", callback_data=_owner_callback("life", owner_id, "paytax"))],
+        [InlineKeyboardButton("🧠 وضعیت عمیق", callback_data=_owner_callback("life", owner_id, "advanced")), InlineKeyboardButton("🤝 آشنایی", callback_data=_owner_callback("life", owner_id, "advmeet"))],
+        [InlineKeyboardButton("💼 یک روز کار", callback_data=_owner_callback("life", owner_id, "advwork")), InlineKeyboardButton("📚 آموزش مهارت", callback_data=_owner_callback("life", owner_id, "advtrain"))],
+        [InlineKeyboardButton("🏦 واریز ۱۰ میلیون", callback_data=_owner_callback("life", owner_id, "advdeposit")), InlineKeyboardButton("💳 وام ۱۰ میلیون", callback_data=_owner_callback("life", owner_id, "advloan"))],
+        [InlineKeyboardButton("🏢 کسب‌وکار پیشرفته", callback_data=_owner_callback("life", owner_id, "advbiz"))],
+        [InlineKeyboardButton("⬅️ بازگشت", callback_data=_owner_callback("move", owner_id, "panel"))],
     ])
 
 
-def life_trade_keyboard():
+def life_trade_keyboard(owner_id: str | None = None):
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📈 خرید فولاد", callback_data="life:buy:فولاد"), InlineKeyboardButton("📉 فروش فولاد", callback_data="life:sell:فولاد")],
-        [InlineKeyboardButton("📈 خرید خودرو", callback_data="life:buy:خودرو"), InlineKeyboardButton("📉 فروش خودرو", callback_data="life:sell:خودرو")],
-        [InlineKeyboardButton("📈 خرید فناوری", callback_data="life:buy:فناوری"), InlineKeyboardButton("📉 فروش فناوری", callback_data="life:sell:فناوری")],
-        [InlineKeyboardButton("📈 خرید بانک", callback_data="life:buy:بانک"), InlineKeyboardButton("📉 فروش بانک", callback_data="life:sell:بانک")],
-        [InlineKeyboardButton("⬅️ برگشت", callback_data="life:menu")],
+        [InlineKeyboardButton("📈 خرید فولاد", callback_data=_owner_callback("life", owner_id, "buy", "فولاد")), InlineKeyboardButton("📉 فروش فولاد", callback_data=_owner_callback("life", owner_id, "sell", "فولاد"))],
+        [InlineKeyboardButton("📈 خرید خودرو", callback_data=_owner_callback("life", owner_id, "buy", "خودرو")), InlineKeyboardButton("📉 فروش خودرو", callback_data=_owner_callback("life", owner_id, "sell", "خودرو"))],
+        [InlineKeyboardButton("📈 خرید فناوری", callback_data=_owner_callback("life", owner_id, "buy", "فناوری")), InlineKeyboardButton("📉 فروش فناوری", callback_data=_owner_callback("life", owner_id, "sell", "فناوری"))],
+        [InlineKeyboardButton("📈 خرید بانک", callback_data=_owner_callback("life", owner_id, "buy", "بانک")), InlineKeyboardButton("📉 فروش بانک", callback_data=_owner_callback("life", owner_id, "sell", "بانک"))],
+        [InlineKeyboardButton("⬅️ برگشت", callback_data=_owner_callback("life", owner_id, "menu"))],
     ])
 
 
 async def life_callback(update, context):
-    if update.effective_chat and update.effective_chat.type != "private":
-        return
     query = update.callback_query
+    owner_id, action = _callback_owner_and_parts(query.data, "life")
+    if not _is_authorized_panel(query, owner_id):
+        await query.answer("⛔ این پنل برای بازیکن دیگری است.", show_alert=True)
+        return
     await query.answer()
     uid = str(query.from_user.id)
-    player = get_player(uid)
+    player = get_or_load_player(uid)
     if not player or not player.alive:
         await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
         return
     if uid not in GAME_TIMES:
         GAME_TIMES[uid] = GameTime(start_hour=random.randint(7, 20))
     gt = GAME_TIMES[uid]
-    action = query.data.split(":")
-    key = action[1] if len(action) > 1 else "menu"
+    key = action[0] if action else "menu"
     text = ""
-    markup = life_keyboard()
-    if key == "menu": text = "🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:" 
-    elif key == "use": text = use_item(player, action[2])[1] if len(action)>2 else "❌ آیتم مشخص نیست."
+    markup = life_keyboard(owner_id)
+    if key == "menu": text = "🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:"
+    elif key == "panel": text = f"🎮 پنل شخصی {player.display_name}\n\n{player.status_text()}"; markup = group_panel_keyboard(uid) if owner_id else life_keyboard(owner_id)
+    elif key == "status": text = render_status_card(player, gt)
+    elif key == "profile": text = render_profile(player)
+    elif key == "inventory":
+        inv = getattr(player, "inventory", {}) or {}
+        text = "🎒 کوله‌پشتی خالیه." if not inv else "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k, v in inv.items())
+    elif key == "rest":
+        player.fatigue = max(0, player.fatigue - random.randint(12, 25))
+        player.mental = min(100, player.mental + random.randint(1, 5))
+        gt.advance(120)
+        text = "😴 استراحت کردی و انرژی‌ات بهتر شد.\n" + daily_life_event(player)
+    elif key == "use": text = use_item(player, action[1])[1] if len(action)>1 else "❌ آیتم مشخص نیست."
+    elif key == "usei":
+        inv = getattr(player, "inventory", {}) or {}
+        try:
+            item_name = list(inv.keys())[int(action[1])]
+            text = use_item(player, item_name)[1]
+        except Exception:
+            text = "❌ آیتم پیدا نشد."
     elif key == "advanced": text = advanced_status(player) + "\n\n" + city_economy_adv(player)
     elif key == "advmeet": text = meet_npc(player)
     elif key == "advwork": text = work_day(player, overtime=False)
@@ -412,7 +494,10 @@ async def life_callback(update, context):
     elif key == "rent": text = rent_house(player)
     elif key == "buyhouse": text = buy_house(player)
     elif key == "vehicles": text = vehicle_text(player)
-    elif key == "buyvehicle": text = buy_vehicle(player, action[2]) if len(action) > 2 else vehicle_text(player)
+    elif key == "buyvehicle":
+        vehicle_codes = {"m": "موتورسیکلت", "e": "خودروی اقتصادی", "f": "خودروی خانوادگی"}
+        vehicle_name = vehicle_codes.get(action[1], action[1]) if len(action) > 1 else None
+        text = buy_vehicle(player, vehicle_name) if vehicle_name else vehicle_text(player)
     elif key == "relationship": text = relationship_text(player)
     elif key == "meet": text = meet_partner(player)
     elif key == "marry": text = marry(player)
@@ -426,9 +511,9 @@ async def life_callback(update, context):
     elif key == "business": text = business_text(player)
     elif key == "startbiz": text = start_business(player)
     elif key == "runbiz": text = run_business(player)
-    elif key == "stocks": text = stock_text(player); markup = life_trade_keyboard()
-    elif key == "buy": text = stock_trade(player, action[2], True); markup = life_trade_keyboard()
-    elif key == "sell": text = stock_trade(player, action[2], False); markup = life_trade_keyboard()
+    elif key == "stocks": text = stock_text(player); markup = life_trade_keyboard(owner_id)
+    elif key == "buy": text = stock_trade(player, action[1], True); markup = life_trade_keyboard(owner_id)
+    elif key == "sell": text = stock_trade(player, action[1], False); markup = life_trade_keyboard(owner_id)
     elif key == "tax": text = tax_text(player)
     elif key == "paytax": text = pay_tax(player)
     else: text = "🌍 سیستم زندگی"
@@ -440,21 +525,21 @@ async def life_callback(update, context):
     await query.edit_message_text(text + "\n\n" + ("روز بازی: " + str(gt.day + 1)), reply_markup=markup)
 
 
-def shop_keyboard():
+def shop_keyboard(owner_id: str | None = None):
     rows = []
     for i, (name, data) in enumerate(SHOPS.items()):
-        rows.append([InlineKeyboardButton(f"{data['icon']} {name}", callback_data=f"shop:open:{i}")])
-    rows.append([InlineKeyboardButton("⬅️ برگشت به حرکت", callback_data="move:panel")])
+        rows.append([InlineKeyboardButton(f"{data['icon']} {name}", callback_data=_owner_callback("shop", owner_id, "open", i))])
+    rows.append([InlineKeyboardButton("⬅️ برگشت به حرکت", callback_data=_owner_callback("move", owner_id, "panel"))])
     return InlineKeyboardMarkup(rows)
 
 
-def shop_items_keyboard(shop_name):
+def shop_items_keyboard(shop_name, owner_id: str | None = None):
     shop = SHOPS[shop_name]
     shop_i = list(SHOPS.keys()).index(shop_name)
     rows = []
     for item_i, (item, (price, _)) in enumerate(shop["items"].items()):
-        rows.append([InlineKeyboardButton(f"{item} — {price:,} تومان", callback_data=f"shop:buy:{shop_i}:{item_i}")])
-    rows.append([InlineKeyboardButton("⬅️ مغازه‌ها", callback_data="shop:list")])
+        rows.append([InlineKeyboardButton(f"{item} — {price:,} تومان", callback_data=_owner_callback("shop", owner_id, "buy", shop_i, item_i))])
+    rows.append([InlineKeyboardButton("⬅️ مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list"))])
     return InlineKeyboardMarkup(rows)
 
 
@@ -467,43 +552,117 @@ def shop_text(shop_name, player):
 
 
 async def shop_callback(update, context):
-    if update.effective_chat and update.effective_chat.type != "private":
-        return
     query = update.callback_query
+    owner_id, parts = _callback_owner_and_parts(query.data, "shop")
+    if not _is_authorized_panel(query, owner_id):
+        await query.answer("⛔ این پنل برای بازیکن دیگری است.", show_alert=True)
+        return
     await query.answer()
     uid = str(query.from_user.id)
-    player = get_player(uid)
+    player = get_or_load_player(uid)
     if not player or not player.alive:
         await query.edit_message_text("اول /start را بزن و شخصیتت را بساز.")
         return
-    parts = query.data.split(":", 2)
-    if len(parts) < 2:
-        return
-    action = parts[1]
+    action = parts[0] if parts else "list"
     if action == "list":
-        await query.edit_message_text(shop_list_text(), reply_markup=shop_keyboard())
+        await query.edit_message_text(shop_list_text(), reply_markup=shop_keyboard(owner_id))
         return
-    if action == "open" and len(parts) == 3:
+    if action == "open" and len(parts) >= 2:
         try:
-            shop_name = list(SHOPS.keys())[int(parts[2])]
+            shop_name = list(SHOPS.keys())[int(parts[1])]
         except Exception:
-            await query.edit_message_text("❌ مغازه پیدا نشد.", reply_markup=shop_keyboard())
+            await query.edit_message_text("❌ مغازه پیدا نشد.", reply_markup=shop_keyboard(owner_id))
             return
-        await query.edit_message_text(shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name))
+        await query.edit_message_text(shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name, owner_id))
         return
-    if action == "buy" and len(parts) == 3:
+    if action == "buy" and len(parts) >= 3:
         try:
-            shop_i, item_i = map(int, parts[2].split(":", 1))
+            shop_i, item_i = int(parts[1]), int(parts[2])
             shop_name = list(SHOPS.keys())[shop_i]
             item_name = list(SHOPS[shop_name]["items"].keys())[item_i]
         except Exception:
-            await query.edit_message_text("❌ اطلاعات خرید نامعتبر است.", reply_markup=shop_keyboard())
+            await query.edit_message_text("❌ اطلاعات خرید نامعتبر است.", reply_markup=shop_keyboard(owner_id))
             return
         ok, msg = buy_item(player, shop_name, item_name)
         if PSYCOPG2_AVAILABLE:
             try: save_player(player)
             except Exception: pass
-        await query.edit_message_text(msg + "\n\n" + shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name))
+        await query.edit_message_text(msg + "\n\n" + shop_text(shop_name, player), reply_markup=shop_items_keyboard(shop_name, owner_id))
+
+
+async def panel_cmd(update, context):
+    """Show a personal inline panel. Safe for groups: only the owner can use its buttons."""
+    uid = str(update.effective_user.id)
+    player = get_or_load_player(uid)
+    if not player:
+        await update.message.reply_text("🎮 هنوز شخصیت نداری. /start را بزن و شهر را انتخاب کن.")
+        return
+    if not player.alive:
+        await update.message.reply_text("💀 شخصیتت مرده. برای شروع دوباره /start را بزن.")
+        return
+    gt = GAME_TIMES.setdefault(uid, GameTime(start_hour=random.randint(7, 20)))
+    await update.message.reply_text(
+        f"🎮 پنل شخصی {player.display_name}\n\n{player.status_text()}",
+        reply_markup=group_panel_keyboard(uid) if update.effective_chat.type != "private" else main_keyboard()
+    )
+
+
+async def city_cmd(update, context):
+    """Group-safe city selection: /city Tehran"""
+    uid = str(update.effective_user.id)
+    args = getattr(context, "args", []) or []
+    city_text = " ".join(args).strip()
+    if not city_text:
+        await update.message.reply_text("🏙 مثال: /city تهران")
+        return
+    city = find_iran_city(city_text)
+    if not city:
+        await update.message.reply_text("❌ شهر پیدا نشد. فقط شهرهای ایران مجاز هستند. مثال: /city تهران")
+        return
+    player = create_fresh_player(uid, name=update.effective_user.first_name, city=city)
+    WAITING_CITY.discard(uid)
+    await update.message.reply_text(
+        f"🎂 زندگی جدیدت از ۱۷ سالگی شروع شد.\n\n{player.status_text()}",
+        reply_markup=group_panel_keyboard(uid) if update.effective_chat.type != "private" else main_keyboard()
+    )
+
+
+async def status_cmd(update, context):
+    uid = str(update.effective_user.id)
+    player = get_or_load_player(uid)
+    if not player:
+        await update.message.reply_text("اول /start و سپس /city تهران را بزن.")
+        return
+    gt = GAME_TIMES.setdefault(uid, GameTime(start_hour=random.randint(7, 20)))
+    await update.message.reply_text(render_status_card(player, gt), reply_markup=group_panel_keyboard(uid) if update.effective_chat.type != "private" else None)
+
+
+async def move_cmd(update, context):
+    uid = str(update.effective_user.id)
+    player = get_or_load_player(uid)
+    if not player:
+        await update.message.reply_text("اول /start و سپس /city تهران را بزن.")
+        return
+    gt = GAME_TIMES.setdefault(uid, GameTime(start_hour=random.randint(7, 20)))
+    await update.message.reply_text(movement_text(player, gt), reply_markup=movement_keyboard(uid))
+
+
+async def life_cmd(update, context):
+    uid = str(update.effective_user.id)
+    player = get_or_load_player(uid)
+    if not player:
+        await update.message.reply_text("اول /start و سپس /city تهران را بزن.")
+        return
+    await update.message.reply_text("🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:", reply_markup=life_keyboard(uid))
+
+
+async def shop_cmd(update, context):
+    uid = str(update.effective_user.id)
+    player = get_or_load_player(uid)
+    if not player:
+        await update.message.reply_text("اول /start و سپس /city تهران را بزن.")
+        return
+    await update.message.reply_text(shop_list_text(), reply_markup=shop_keyboard(uid))
 
 
 async def help_cmd(update, context):
@@ -572,7 +731,7 @@ async def handle_message(update, context):
         )
         return
 
-    player = get_player(uid)
+    player = get_or_load_player(uid)
 
     # هنوز شخصیت نساخته
     if not player:
@@ -598,13 +757,13 @@ async def handle_message(update, context):
     # بازیکن زندانی فقط می‌تواند یک روز از محکومیتش را بگذراند یا وضعیت قانون را ببیند.
     jail_days = ensure_data(player)["legal"].get("jail_days", 0)
     if jail_days > 0 and text not in ["⚖️ قانون", "قانون", "پلیس", "🔒 زندان", "زندگی", "life"]:
-        await update.message.reply_text(f"🔒 در زندان هستی. روزهای باقی‌مانده: {jail_days}\nبرای گذراندن یک روز، دکمه «زندان» را بزن.", reply_markup=life_keyboard())
+        await update.message.reply_text(f"🔒 در زندان هستی. روزهای باقی‌مانده: {jail_days}\nبرای گذراندن یک روز، دکمه «زندان» را بزن.", reply_markup=life_keyboard(uid))
         return
 
     reply = None
 
     if text in ["🏫 تحصیل", "تحصیل", "زندگی پیشرفته", "🌍 زندگی"]:
-        await update.message.reply_text("🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:", reply_markup=life_keyboard())
+        await update.message.reply_text("🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:", reply_markup=life_keyboard(uid))
         return
 
     if text in ["🧠 زندگی هوشمند", "زندگی هوشمند", "هوش"]:
@@ -615,47 +774,47 @@ async def handle_message(update, context):
         return
 
     if text in ["🏦 بانک", "بانک", "bank"]:
-        await update.message.reply_text(bank_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(bank_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🏠 مسکن", "مسکن", "خانه و ملک"]:
-        await update.message.reply_text(housing_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(housing_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🚗 وسایل نقلیه", "وسایل نقلیه", "خودرو", "ماشین"]:
-        await update.message.reply_text(vehicle_text(player), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏍️ موتور", callback_data="life:buyvehicle:موتورسیکلت")],[InlineKeyboardButton("🚗 خودروی اقتصادی", callback_data="life:buyvehicle:خودرو اقتصادی")],[InlineKeyboardButton("🚙 خودروی خانوادگی", callback_data="life:buyvehicle:خودرو خانوادگی")],[InlineKeyboardButton("⬅️ برگشت", callback_data="life:menu")]]))
+        await update.message.reply_text(vehicle_text(player), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏍️ موتور", callback_data=_owner_callback("life", uid, "buyvehicle", "m"))],[InlineKeyboardButton("🚗 خودروی اقتصادی", callback_data=_owner_callback("life", uid, "buyvehicle", "e"))],[InlineKeyboardButton("🚙 خودروی خانوادگی", callback_data=_owner_callback("life", uid, "buyvehicle", "f"))],[InlineKeyboardButton("⬅️ برگشت", callback_data=_owner_callback("life", uid, "menu"))]]))
         return
 
     if text in ["❤️ روابط", "روابط", "ازدواج"]:
-        await update.message.reply_text(relationship_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(relationship_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["⚖️ قانون", "قانون", "پلیس"]:
-        await update.message.reply_text(legal_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(legal_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🏥 بیمارستان", "بیمارستان"]:
-        await update.message.reply_text(hospital(player), reply_markup=life_keyboard())
+        await update.message.reply_text(hospital(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🏢 کسب‌وکار", "کسب و کار", "کسب‌وکار"]:
-        await update.message.reply_text(business_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(business_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["📈 بورس", "بورس", "سهام"]:
-        await update.message.reply_text(stock_text(player), reply_markup=life_trade_keyboard())
+        await update.message.reply_text(stock_text(player), reply_markup=life_trade_keyboard(uid))
         return
 
     if text in ["🏙 اقتصاد شهر", "اقتصاد شهر"]:
-        await update.message.reply_text(city_economy_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(city_economy_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🧾 مالیات", "مالیات"]:
-        await update.message.reply_text(tax_text(player), reply_markup=life_keyboard())
+        await update.message.reply_text(tax_text(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🏪 مغازه‌ها", "مغازه‌ها", "مغازه", "shop"]:
-        await update.message.reply_text(shop_list_text(), reply_markup=shop_keyboard())
+        await update.message.reply_text(shop_list_text(), reply_markup=shop_keyboard(uid))
         return
 
     if text in ["🎒 کوله‌پشتی", "کوله‌پشتی", "کیف", "inventory"]:
@@ -666,8 +825,8 @@ async def handle_message(update, context):
         else:
             reply = "🎒 کوله‌پشتی\n\n" + "\n".join(f"• {k}: {v}" for k,v in inv.items())
             rows = []
-            for item, qty in inv.items():
-                rows.append([InlineKeyboardButton(f"استفاده: {item} ×{qty}", callback_data=f"life:use:{item}")])
+            for idx, (item, qty) in enumerate(inv.items()):
+                rows.append([InlineKeyboardButton(f"استفاده: {item} ×{qty}", callback_data=_owner_callback("life", uid, "usei", idx))])
             markup = InlineKeyboardMarkup(rows)
         await update.message.reply_text(reply, reply_markup=markup)
         return
@@ -707,7 +866,7 @@ async def handle_message(update, context):
             return
 
     if text in ["🧭 حرکت", "حرکت", "move"]:
-        await update.message.reply_text(movement_text(player, gt), reply_markup=movement_keyboard())
+        await update.message.reply_text(movement_text(player, gt), reply_markup=movement_keyboard(uid))
         return
 
     if text in ["خانه", "خونه", "home"]:
@@ -840,12 +999,20 @@ def main_bot():
             print("DB init:", e)
 
     app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("panel", panel_cmd))
+    app.add_handler(CommandHandler("city", city_cmd))
+    app.add_handler(CommandHandler("status", status_cmd))
+    app.add_handler(CommandHandler("move", move_cmd))
+    app.add_handler(CommandHandler("life", life_cmd))
+    app.add_handler(CommandHandler("shop", shop_cmd))
     app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:"))
-    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_message))
+    # Text commands work in private chats and groups. For groups, Telegram privacy mode
+    # may need to be disabled in BotFather if you want arbitrary non-command text.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("ربات شروع شد...")
     app.run_polling()
