@@ -39,7 +39,6 @@ from life_system import make_family, home_for_family, home_text, family_text, da
 from map_system import DIRECTIONS, generate_location_name, get_random_description
 from advanced_simulation import (ensure_advanced, daily_tick, advanced_status, city_economy_adv, work_day, train_skill, bank_deposit_adv, bank_withdraw_adv, take_loan_adv, meet_npc, relationship_action, commit_crime_adv, start_business_adv, run_business_adv, stock_trade_adv)
 from living_world import news_text, simulate_npcs
-from smart_life import smart_status, smart_advice, smart_decision, smart_goals
 from life_features import (ensure_data, education_text, study, bank_text, bank_deposit, bank_withdraw, bank_loan,
     housing_text, rent_house, buy_house, vehicle_text, buy_vehicle, relationship_text, meet_partner, marry, have_child,
     legal_text, commit_crime, pay_fine, hospital, business_text, start_business, run_business, stock_text, stock_trade,
@@ -176,7 +175,7 @@ def main_keyboard():
             ["شغل", "کار کن", "دعوا"],
             ["🏪 مغازه‌ها", "🎒 کوله‌پشتی"],
             ["🏫 تحصیل", "🏦 بانک", "🏠 مسکن"],
-            ["🚗 وسایل نقلیه", "❤️ روابط", "⚖️ قانون", "🚔 پلیس"],
+            ["🚗 وسایل نقلیه", "❤️ روابط", "⚖️ قانون"],
             ["🏥 بیمارستان", "🏢 کسب‌وکار", "📈 بورس"],
             ["🧾 مالیات", "شهرها", "سفر"],
             ["🧠 زندگی هوشمند", "زمان", "کمک"],
@@ -376,8 +375,6 @@ def group_panel_keyboard(owner_id: str):
          InlineKeyboardButton("🌍 زندگی", callback_data=_owner_callback("life", owner_id, "menu"))],
         [InlineKeyboardButton("🏠 خانه", callback_data=_owner_callback("life", owner_id, "home")),
          InlineKeyboardButton("👨‍👩‍👧 خانواده", callback_data=_owner_callback("life", owner_id, "family"))],
-        [InlineKeyboardButton("🧠 زندگی هوشمند", callback_data=_owner_callback("life", owner_id, "smart"))],
-        [InlineKeyboardButton("🚔 پلیس و قانون", callback_data=_owner_callback("life", owner_id, "police"))],
         [InlineKeyboardButton("🏪 مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list")),
          InlineKeyboardButton("🎒 کوله‌پشتی", callback_data=_owner_callback("life", owner_id, "inventory"))],
         [InlineKeyboardButton("💼 کار", callback_data=_owner_callback("life", owner_id, "advwork")),
@@ -572,17 +569,12 @@ def life_keyboard(owner_id: str | None = None):
         [InlineKeyboardButton("🚗 خودرو و موتور", callback_data=_owner_callback("life", owner_id, "vehicles"))],
         [InlineKeyboardButton("❤️ روابط", callback_data=_owner_callback("life", owner_id, "relationship")), InlineKeyboardButton("💞 آشنایی/قرار", callback_data=_owner_callback("life", owner_id, "meet")), InlineKeyboardButton("💍 ازدواج", callback_data=_owner_callback("life", owner_id, "marry"))],
         [InlineKeyboardButton("👶 فرزند", callback_data=_owner_callback("life", owner_id, "child")), InlineKeyboardButton("👨‍👩‍👧 فرزندان", callback_data=_owner_callback("life", owner_id, "children"))],
-        [InlineKeyboardButton("🚔 پلیس", callback_data=_owner_callback("life", owner_id, "police")), InlineKeyboardButton("⚖️ قانون", callback_data=_owner_callback("life", owner_id, "legal"))],
-        [InlineKeyboardButton("⚠️ جرم", callback_data=_owner_callback("life", owner_id, "crime")), InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
-        [InlineKeyboardButton("📝 شکایت", callback_data=_owner_callback("life", owner_id, "complaint")), InlineKeyboardButton("👨‍⚖️ دادگاه", callback_data=_owner_callback("life", owner_id, "court"))],
-        [InlineKeyboardButton("👨‍💼 وکیل", callback_data=_owner_callback("life", owner_id, "lawyer")), InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
+        [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data=_owner_callback("life", owner_id, "legal")), InlineKeyboardButton("⚠️ جرم", callback_data=_owner_callback("life", owner_id, "crime")), InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
         [InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
         [InlineKeyboardButton("🏥 بیمارستان", callback_data=_owner_callback("life", owner_id, "hospital")), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data=_owner_callback("life", owner_id, "cityeconomy"))],
         [InlineKeyboardButton("🏢 کسب‌وکار", callback_data=_owner_callback("life", owner_id, "business")), InlineKeyboardButton("🚀 راه‌اندازی", callback_data=_owner_callback("life", owner_id, "startbiz")), InlineKeyboardButton("📊 فعالیت", callback_data=_owner_callback("life", owner_id, "runbiz"))],
         [InlineKeyboardButton("📈 بورس", callback_data=_owner_callback("life", owner_id, "stocks")), InlineKeyboardButton("🧾 مالیات", callback_data=_owner_callback("life", owner_id, "tax")), InlineKeyboardButton("💳 پرداخت مالیات", callback_data=_owner_callback("life", owner_id, "paytax"))],
-        [InlineKeyboardButton("🧠 زندگی هوشمند", callback_data=_owner_callback("life", owner_id, "smart")), InlineKeyboardButton("📊 وضعیت عمیق", callback_data=_owner_callback("life", owner_id, "advanced"))],
-        [InlineKeyboardButton("💡 پیشنهاد هوشمند", callback_data=_owner_callback("life", owner_id, "smartadvice")), InlineKeyboardButton("🎯 اهداف", callback_data=_owner_callback("life", owner_id, "smartgoals"))],
-        [InlineKeyboardButton("🤖 تصمیم امروز", callback_data=_owner_callback("life", owner_id, "smartdecision")), InlineKeyboardButton("🤝 آشنایی", callback_data=_owner_callback("life", owner_id, "advmeet"))],
+        [InlineKeyboardButton("🧠 وضعیت عمیق", callback_data=_owner_callback("life", owner_id, "advanced")), InlineKeyboardButton("🤝 آشنایی", callback_data=_owner_callback("life", owner_id, "advmeet"))],
         [InlineKeyboardButton("💼 یک روز کار", callback_data=_owner_callback("life", owner_id, "advwork")), InlineKeyboardButton("📚 آموزش مهارت", callback_data=_owner_callback("life", owner_id, "advtrain"))],
         [InlineKeyboardButton("🏦 واریز ۱۰ میلیون", callback_data=_owner_callback("life", owner_id, "advdeposit")), InlineKeyboardButton("💳 وام ۱۰ میلیون", callback_data=_owner_callback("life", owner_id, "advloan"))],
         [InlineKeyboardButton("🏢 کسب‌وکار پیشرفته", callback_data=_owner_callback("life", owner_id, "advbiz"))],
@@ -640,10 +632,6 @@ async def life_callback(update, context):
             text = use_item(player, item_name)[1]
         except Exception:
             text = "❌ آیتم پیدا نشد."
-    elif key == "smart": text = smart_status(player) + "\n\n" + smart_advice(player)
-    elif key == "smartadvice": text = smart_advice(player)
-    elif key == "smartdecision": text = smart_decision(player)
-    elif key == "smartgoals": text = smart_goals(player)
     elif key == "advanced": text = advanced_status(player) + "\n\n" + city_economy_adv(player)
     elif key == "advmeet": text = meet_npc(player)
     elif key == "advwork": text = work_day(player, overtime=False)
@@ -681,37 +669,7 @@ async def life_callback(update, context):
                 job = child_job_for_age(age)
                 lines.append(f"{i}. {child.get('name','بدون نام')} ({child.get('gender','نامشخص')}) | {age} سال | {stage} | {job} | ❤️ {child.get('health', 100)}%")
             text = "\n".join(lines)
-    elif key == "police":
-        d = ensure_advanced(player)["legal"]
-        text = ("🚔 پلیس و خدمات قانونی\n\n"
-                f"📁 سابقه کیفری: {d.get('record',0)}\n"
-                f"💸 جریمه‌های پرداخت‌نشده: {d.get('fines',0):,} تومان\n"
-                f"🔒 زندان: {d.get('jail_days',0)} روز\n"
-                f"📝 شکایت‌های ثبت‌شده: {d.get('complaints',0)}\n\n"
-                "از این بخش می‌توانی وضعیت قانونی خودت را بررسی کنی، شکایت ثبت کنی یا برای پرونده وکیل بگیری.")
     elif key == "legal": text = legal_text(player)
-    elif key == "complaint":
-        d = ensure_advanced(player)["legal"]
-        d["complaints"] = int(d.get("complaints", 0)) + 1
-        text = "📝 شکایت ثبت شد و برای بررسی در سیستم قضایی قرار گرفت."
-    elif key == "lawyer":
-        d = ensure_advanced(player)["legal"]
-        fee = 750_000
-        if player.money < fee:
-            text = f"👨‍💼 هزینه وکیل {fee:,} تومان است و پول کافی نداری."
-        else:
-            player.money -= fee
-            d["lawyer_hired"] = True
-            text = f"👨‍💼 وکیل استخدام شد. هزینه: {fee:,} تومان."
-    elif key == "court":
-        d = ensure_advanced(player)["legal"]
-        if d.get("fines", 0) <= 0 and d.get("complaints", 0) <= 0 and d.get("record", 0) <= 0:
-            text = "👨‍⚖️ پرونده فعالی نداری."
-        elif d.get("record", 0) > 0 and random.random() < (0.45 if d.get("lawyer_hired") else 0.25):
-            d["record"] = max(0, int(d["record"]) - 1)
-            text = "👨‍⚖️ جلسه دادگاه برگزار شد و یک سابقه از پرونده‌ات کاهش یافت."
-        else:
-            text = "👨‍⚖️ جلسه دادگاه برگزار شد؛ پرونده همچنان تحت بررسی است."
     elif key == "crime": text = commit_crime(player)
     elif key == "fine": text = pay_fine(player)
     elif key == "hospital": text = hospital(player)
@@ -919,7 +877,7 @@ async def handle_message(update, context):
         "خودرو", "🚗 وسایل نقلیه", "وسایل نقلیه", "ماشین", "روابط", "❤️ روابط", "ازدواج",
         "قانون", "⚖️ قانون", "پلیس", "بیمارستان", "🏥 بیمارستان", "کسب و کار", "🏢 کسب‌وکار",
         "کسب‌وکار", "بورس", "📈 بورس", "سهام", "مالیات", "🧾 مالیات", "اقتصاد", "تورم", "بیکاری",
-        "🏙 اقتصاد شهر", "🧠 زندگی هوشمند", "زندگی هوشمند", "هوش", "پیشنهاد هوشمند", "پیشنهاد", "تصمیم امروز", "تصمیم هوشمند", "اهداف", "اهداف زندگی", "🎒 کوله‌پشتی",
+        "🏙 اقتصاد شهر", "🧠 زندگی هوشمند", "زندگی هوشمند", "هوش", "🎒 کوله‌پشتی",
         "status", "profile", "move", "life", "shop", "inventory", "home",
         "family", "rest", "jobs", "work", "fight", "time", "help",
         "bank", "city", "north", "south", "east", "west"
@@ -1118,19 +1076,9 @@ async def handle_message(update, context):
 
     if text in ["🧠 زندگی هوشمند", "زندگی هوشمند", "هوش"]:
         await update.message.reply_text(
-            smart_status(player) + "\n\n" + smart_advice(player),
-            reply_markup=life_keyboard(uid)
+            advanced_status(player) + "\n\n" + city_economy_adv(player),
+            reply_markup=life_keyboard()
         )
-        return
-
-    if text in ["پیشنهاد هوشمند", "پیشنهاد", "smart advice"]:
-        await update.message.reply_text(smart_advice(player), reply_markup=life_keyboard(uid))
-        return
-    if text in ["تصمیم امروز", "تصمیم هوشمند"]:
-        await update.message.reply_text(smart_decision(player), reply_markup=life_keyboard(uid))
-        return
-    if text in ["اهداف", "اهداف زندگی"]:
-        await update.message.reply_text(smart_goals(player), reply_markup=life_keyboard(uid))
         return
 
     if text in ["🏦 بانک", "بانک", "bank"]:
@@ -1149,20 +1097,8 @@ async def handle_message(update, context):
         await update.message.reply_text(relationship_text(player), reply_markup=life_keyboard(uid))
         return
 
-    if text in ["⚖️ قانون", "قانون"]:
+    if text in ["⚖️ قانون", "قانون", "پلیس"]:
         await update.message.reply_text(legal_text(player), reply_markup=life_keyboard(uid))
-        return
-
-    if text in ["🚔 پلیس", "پلیس"]:
-        d = ensure_advanced(player)["legal"]
-        await update.message.reply_text(
-            "🚔 پلیس و خدمات قانونی\n\n"
-            f"📁 سابقه کیفری: {d.get('record',0)}\n"
-            f"💸 جریمه‌های پرداخت‌نشده: {d.get('fines',0):,} تومان\n"
-            f"🔒 زندان: {d.get('jail_days',0)} روز\n"
-            f"📝 شکایت‌های ثبت‌شده: {d.get('complaints',0)}",
-            reply_markup=life_keyboard(uid)
-        )
         return
 
     if text in ["🏥 بیمارستان", "بیمارستان"]:
