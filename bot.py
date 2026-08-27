@@ -838,9 +838,9 @@ def main_bot():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("help", help_cmd, filters=filters.ChatType.PRIVATE))
-    app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:", chat_types=["private"]))
-    app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:", chat_types=["private"]))
-    app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:", chat_types=["private"]))
+    app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:"))
+    app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
+    app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("ربات شروع شد...")

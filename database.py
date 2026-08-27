@@ -6,6 +6,7 @@
 import os
 import json
 from datetime import datetime
+from urllib.parse import urlparse, unquote
 
 # تلاش برای وارد کردن psycopg2
 try:
@@ -16,23 +17,53 @@ except ImportError:
     PSYCOPG2_AVAILABLE = False
     print("⚠️  psycopg2 نصب نیست. برای ذخیره دائمی: pip install psycopg2-binary")
 
-# تنظیمات اتصال (از محیط یا پیش‌فرض)
-DB_CONFIG = {
-    "host": os.getenv("DB_HOST", "localhost"),
-    "port": os.getenv("DB_PORT", "5432"),
-    "dbname": os.getenv("DB_NAME", "iranian_life_sim"),
-    "user": os.getenv("DB_USER", "postgres"),
-    "password": os.getenv("DB_PASSWORD", "postgres"),
-}
+# تنظیمات اتصال. Render معمولاً یک DATABASE_URL کامل می‌دهد؛
+# در عین حال DB_HOST/DB_PORT/... برای سازگاری با Blueprint حفظ شده‌اند.
+def _build_db_config():
+    database_url = (os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or "").strip()
+    if database_url:
+        parsed = urlparse(database_url)
+        if parsed.hostname:
+            return {
+                "host": parsed.hostname,
+                "port": parsed.port or 5432,
+                "dbname": (parsed.path or "/").lstrip("/") or "iranian_life_sim",
+                "user": unquote(parsed.username or ""),
+                "password": unquote(parsed.password or ""),
+            }
+
+    # اگر DB_HOST به اشتباه خودِ URL باشد، آن را هم تشخیص بده.
+    raw_host = (os.getenv("DB_HOST") or "localhost").strip()
+    if "://" in raw_host:
+        parsed = urlparse(raw_host)
+        if parsed.hostname:
+            return {
+                "host": parsed.hostname,
+                "port": parsed.port or int(os.getenv("DB_PORT", "5432")),
+                "dbname": (parsed.path or "/").lstrip("/") or os.getenv("DB_NAME", "iranian_life_sim"),
+                "user": unquote(parsed.username or os.getenv("DB_USER", "postgres")),
+                "password": unquote(parsed.password or os.getenv("DB_PASSWORD", "postgres")),
+            }
+
+    return {
+        "host": raw_host,
+        "port": int(os.getenv("DB_PORT", "5432")),
+        "dbname": os.getenv("DB_NAME", "iranian_life_sim"),
+        "user": os.getenv("DB_USER", "postgres"),
+        "password": os.getenv("DB_PASSWORD", "postgres"),
+    }
+
+DB_CONFIG = _build_db_config()
 
 def get_connection():
     if not PSYCOPG2_AVAILABLE:
         return None
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
+        conn = psycopg2.connect(connect_timeout=10, **DB_CONFIG)
         return conn
     except Exception as e:
         print(f"❌ خطا در اتصال به دیتابیس: {e}")
+        print(f"ℹ️ DB host={DB_CONFIG.get('host')} port={DB_CONFIG.get('port')} db={DB_CONFIG.get('dbname')}")
         return None
 
 
