@@ -724,6 +724,27 @@ async def handle_message(update, context):
     uid = str(user.id)
     text = (update.message.text or "").strip()
 
+    # فقط فرمان‌های صریح فارسی/انگلیسی پردازش شوند؛ متن عادی نادیده گرفته شود.
+    # هنگام انتخاب شهر، خود نام شهر نیز ورودی معتبر است.
+    explicit_commands = {
+        "شروع", "استارت", "کمک", "راهنما", "پنل", "وضعیت", "پروفایل",
+        "حرکت", "🧭 حرکت", "زندگی", "خانه", "خونه", "خانواده", "استراحت",
+        "شغل", "کار", "کار کن", "دعوا", "زمان", "مغازه", "مغازه‌ها",
+        "کوله‌پشتی", "کیف", "بانک", "مسکن", "خانه و ملک", "خودرو", "ماشین",
+        "وسایل نقلیه", "روابط", "ازدواج", "قانون", "پلیس", "بیمارستان",
+        "کسب و کار", "کسب‌وکار", "بورس", "سهام", "اقتصاد شهر", "مالیات",
+        "شمال", "جنوب", "شرق", "غرب", "ادمین",
+        "status", "profile", "move", "life", "shop", "inventory", "home",
+        "family", "rest", "jobs", "work", "fight", "time", "help",
+        "bank", "city", "north", "south", "east", "west"
+    }
+    is_dynamic_command = (
+        text.startswith("انتخاب شغل ") or text.startswith("ادمین ")
+        or text.startswith("شهر ") or text.startswith("city ")
+    )
+    if uid not in WAITING_CITY and text not in explicit_commands and not is_dynamic_command:
+        return
+
     # ----- منتظر انتخاب شهر -----
     if uid in WAITING_CITY:
         city = find_iran_city(text)
@@ -758,6 +779,37 @@ async def handle_message(update, context):
             f"{player.status_text()}",
             reply_markup=markup,
         )
+        return
+
+    # فرمان‌های فارسی معادل دستورات Slash
+    if text in ["شروع", "استارت"]:
+        await start(update, context)
+        return
+    if text in ["پنل"]:
+        await panel_cmd(update, context)
+        return
+    if text in ["راهنما"]:
+        await help_cmd(update, context)
+        return
+
+    # ----- فرمان «شهر <نام شهر>» -----
+    if text.startswith("شهر "):
+        city_name = text[5:].strip()
+        city = find_iran_city(city_name)
+        if not city:
+            await update.message.reply_text("❌ این شهر پیدا نشد. مثال: شهر تهران")
+            return
+        player = get_or_load_player(uid)
+        if not player:
+            await update.message.reply_text("اول «شروع» یا /start را بزن.")
+            return
+        player.city = city
+        player.neighborhood = random.choice(CITIES.get(city, {}).get("neighborhoods", ["مرکز شهر"]))
+        player.location = "مرکز شهر"
+        if PSYCOPG2_AVAILABLE:
+            try: save_player(player)
+            except Exception: pass
+        await update.message.reply_text(f"🏙 شهر فعلی: {city}")
         return
 
     player = get_or_load_player(uid)
@@ -992,7 +1044,8 @@ async def handle_message(update, context):
             reply = "دسترسی ادمین نداری."
 
     else:
-        reply = "متوجه نشدم. «کمک» یا /start را بزن."
+        # متن نامعتبر عمداً نادیده گرفته می‌شود؛ ربات نباید به گفت‌وگوی عادی پاسخ دهد.
+        return
 
     if PSYCOPG2_AVAILABLE and player:
         try:
@@ -1039,7 +1092,9 @@ def main_bot():
     app.add_handler(CallbackQueryHandler(movement_callback, pattern=r"^move:"))
     app.add_handler(CallbackQueryHandler(shop_callback, pattern=r"^shop:"))
     app.add_handler(CallbackQueryHandler(life_callback, pattern=r"^life:"))
-    # فقط دستورات و دکمه‌های Inline پردازش می‌شوند؛ پیام‌های عادی نادیده گرفته می‌شوند.
+    # Text commands work in private chats and groups. For groups, Telegram privacy mode
+    # may need to be disabled in BotFather if you want arbitrary non-command text.
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("ربات شروع شد...")
     app.run_polling()
