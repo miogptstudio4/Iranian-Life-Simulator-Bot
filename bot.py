@@ -769,7 +769,12 @@ async def handle_message(update, context):
         "کوله‌پشتی", "کیف", "بانک", "مسکن", "خانه و ملک", "خودرو", "ماشین",
         "وسایل نقلیه", "روابط", "ازدواج", "قانون", "پلیس", "بیمارستان",
         "کسب و کار", "کسب‌وکار", "بورس", "سهام", "اقتصاد شهر", "مالیات",
-        "شمال", "جنوب", "شرق", "غرب", "شهرها", "فرزندان", "بچه‌ها", "سفر", "ادمین", "اخبار", "روزنامه", "مردم", "NPC", "ان پی سی", "رتبه‌بندی", "رتبه بندی", "لیدربورد", "کالاها",
+        "شمال", "جنوب", "شرق", "غرب", "شهرها", "فرزندان", "بچه‌ها", "سفر", "ادمین", "اخبار", "روزنامه", "اخبار اقتصادی", "مردم", "NPC", "ان پی سی", "رتبه‌بندی", "رتبه بندی", "لیدربورد", "کالاها", "بازار کالا",
+        "تحصیل", "🏫 تحصیل", "درس خواندن", "بانک", "🏦 بانک", "مسکن", "🏠 مسکن", "خانه و ملک",
+        "خودرو", "🚗 وسایل نقلیه", "وسایل نقلیه", "ماشین", "روابط", "❤️ روابط", "ازدواج",
+        "قانون", "⚖️ قانون", "پلیس", "بیمارستان", "🏥 بیمارستان", "کسب و کار", "🏢 کسب‌وکار",
+        "کسب‌وکار", "بورس", "📈 بورس", "سهام", "مالیات", "🧾 مالیات", "اقتصاد", "تورم", "بیکاری",
+        "🏙 اقتصاد شهر", "🧠 زندگی هوشمند", "زندگی هوشمند", "هوش", "🎒 کوله‌پشتی",
         "status", "profile", "move", "life", "shop", "inventory", "home",
         "family", "rest", "jobs", "work", "fight", "time", "help",
         "bank", "city", "north", "south", "east", "west"
@@ -815,6 +820,12 @@ async def handle_message(update, context):
             f"{player.status_text()}",
             reply_markup=markup,
         )
+        return
+
+    # بازیکن را پیش از فرمان‌های جهان زنده لود می‌کنیم؛ قبلاً این بخش قبل از get_or_load_player اجرا می‌شد.
+    player = get_or_load_player(uid)
+    if not player and text not in ["شروع", "استارت", "کمک", "راهنما"]:
+        await update.message.reply_text("اول «شروع» یا /start را بزن.")
         return
 
     # فرمان‌های فارسی معادل دستورات Slash
@@ -914,7 +925,7 @@ async def handle_message(update, context):
         await update.message.reply_text(f"🏙 شهر فعلی: {city}")
         return
 
-    player = get_or_load_player(uid)
+    # player در ابتدای پردازش فرمان‌ها لود شده است.
 
     # هنوز شخصیت نساخته
     if not player:
@@ -1086,6 +1097,14 @@ async def handle_message(update, context):
             reply += "\n" + msg
         for msg in daily_tick(player, gt.day):
             reply += "\n" + msg
+        # استراحت یک فرمان کامل است؛ ادامه‌ی زنجیره‌ی if/elif نباید آن را پاک کند.
+        if PSYCOPG2_AVAILABLE and player:
+            try:
+                save_player(player)
+            except Exception:
+                pass
+        await update.message.reply_text(reply)
+        return
     if text in ["وضعیت", "status"]:
         reply = render_status_card(player, gt)
 
