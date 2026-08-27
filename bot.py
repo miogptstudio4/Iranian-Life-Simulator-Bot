@@ -32,7 +32,7 @@ from combat import street_fight
 from time_system import GameTime
 from database import (
     init_database, save_player, load_player_by_numeric_id, leaderboard_rows,
-    apply_loaded_data, PSYCOPG2_AVAILABLE
+    apply_loaded_data, PSYCOPG2_AVAILABLE, get_connection
 )
 from render import render_status_card, render_profile
 from life_system import make_family, home_for_family, home_text, family_text, daily_life_event, advance_life_age
@@ -207,6 +207,105 @@ def movement_keyboard(owner_id: str | None = None):
     ])
 
 
+
+
+def admin_keyboard(is_super: bool = False):
+    rows = [
+        [InlineKeyboardButton("📊 آمار بازی", callback_data="admin:stats"),
+         InlineKeyboardButton("👥 بازیکنان", callback_data="admin:players")],
+        [InlineKeyboardButton("🌍 اقتصاد جهان", callback_data="admin:economy"),
+         InlineKeyboardButton("🏆 رتبه‌بندی", callback_data="admin:leaderboard")],
+        [InlineKeyboardButton("📋 لیست ادمین‌ها", callback_data="admin:admins"),
+         InlineKeyboardButton("🔄 تازه‌سازی", callback_data="admin:panel")],
+    ]
+    if is_super:
+        rows.append([InlineKeyboardButton("➕ افزودن ادمین", callback_data="admin:addhelp"),
+                     InlineKeyboardButton("➖ حذف ادمین", callback_data="admin:removehelp")])
+    rows.append([InlineKeyboardButton("❌ بستن پنل", callback_data="admin:close")])
+    return InlineKeyboardMarkup(rows)
+
+
+def admin_stats_text():
+    conn = get_connection() if PSYCOPG2_AVAILABLE else None
+    if not conn:
+        return "❌ دیتابیس در دسترس نیست."
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE alive), COUNT(*) FILTER (WHERE NOT alive), COALESCE(SUM(money),0), COALESCE(AVG(age_days),0) FROM players")
+        total, alive, dead, money, avg_age = cur.fetchone()
+        cur.execute("SELECT city, COUNT(*) FROM players GROUP BY city ORDER BY COUNT(*) DESC LIMIT 5")
+        cities = cur.fetchall()
+        cur.close(); conn.close()
+        city_text = "\n".join(f"• {c}: {n} نفر" for c,n in cities) or "—"
+        return (f"📊 آمار بازی\n\n👥 بازیکنان: {total}\n🟢 زنده: {alive}\n💀 فوت‌شده: {dead}\n"
+                f"💰 مجموع پول: {int(money):,} تومان\n🎂 میانگین سن بازی: {avg_age/10:.1f} سال\n\n🏙 شهرهای پرتعداد:\n{city_text}")
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ خطا در آمار: {e}"
+
+
+def admin_players_text():
+    conn = get_connection() if PSYCOPG2_AVAILABLE else None
+    if not conn:
+        return "❌ دیتابیس در دسترس نیست."
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT numeric_id,name,gender,age_days,job,city,money,alive FROM players ORDER BY updated_at DESC LIMIT 15")
+        rows = cur.fetchall(); cur.close(); conn.close()
+        if not rows: return "👥 هنوز بازیکنی ثبت نشده."
+        out=["👥 آخرین بازیکنان:"]
+        for uid,name,gender,age,job,city,money,alive in rows:
+            out.append(f"• {name} | ID: {uid or '—'} | {gender or '—'} | {age/10:.1f}س | {job or 'بیکار'} | {city or '—'} | {int(money or 0):,} | {'🟢' if alive else '💀'}")
+        out.append("\n🔎 برای جزئیات: /admin player ID")
+        return "\n".join(out)
+    except Exception as e:
+        try: conn.close()
+        except Exception: pass
+        return f"❌ خطا: {e}"
+
+
+async def admin_cmd(update, context):
+    uid = str(update.effective_user.id)
+    if not is_admin(uid):
+        await update.message.reply_text("⛔ دسترسی به پنل ادمین نداری.")
+        return
+    await update.message.reply_text("🛡️ پنل مدیریت بازی\n\nاز دکمه‌ها برای مدیریت و مشاهده وضعیت سرور استفاده کن.", reply_markup=admin_keyboard(is_super_admin(uid)))
+
+
+async def admin_callback(update, context):
+    query = update.callback_query
+    uid = str(query.from_user.id)
+    if not is_admin(uid):
+        await query.answer("⛔ دسترسی ادمین نداری.", show_alert=True)
+        return
+    await query.answer()
+    action = query.data.split(":",1)[1] if ":" in query.data else "panel"
+    if action == "close":
+        await query.edit_message_text("🛡️ پنل ادمین بسته شد.")
+        return
+    if action == "panel":
+        await query.edit_message_text("🛡️ پنل مدیریت بازی\n\nیک گزینه را انتخاب کن:", reply_markup=admin_keyboard(is_super_admin(uid)))
+        return
+    if action == "stats":
+        text = admin_stats_text()
+    elif action == "players":
+        text = admin_players_text()
+    elif action == "leaderboard":
+        rows = leaderboard_rows(15)
+        text = "🏆 رتبه‌بندی\n\n" + ("\n".join(f"{i}. {r.get('name','—')} — {int(r.get('money') or 0):,} تومان — {r.get('city','—')}" for i,r in enumerate(rows,1)) or "هنوز بازیکنی نیست.")
+    elif action == "admins":
+        text = "🛡️ ادمین‌ها\n\n" + "\n".join(f"• {x}{' ⭐' if x == SUPER_ADMIN_ID else ''}" for x in list_admins())
+    elif action == "economy":
+        text = "🌍 برای مشاهده اقتصاد یک بازیکن: /admin player ID\n\nاقتصاد کل جهان از سیستم شبیه‌سازی روزانه به‌روزرسانی می‌شود."
+    elif action == "addhelp":
+        text = "➕ افزودن ادمین\n\nفقط سوپرادمین می‌تواند انجام دهد.\nدستور: /admin add ID"
+    elif action == "removehelp":
+        text = "➖ حذف ادمین\n\nفقط سوپرادمین می‌تواند انجام دهد.\nدستور: /admin remove ID"
+    else:
+        text = "❌ گزینه نامعتبر است."
+    await query.edit_message_text(text, reply_markup=admin_keyboard(is_super_admin(uid)))
+
 def movement_text(player, gt):
     return (
         "🧭 **پنل حرکت**\n\n"
@@ -274,6 +373,8 @@ def group_panel_keyboard(owner_id: str):
          InlineKeyboardButton("👤 پروفایل", callback_data=_owner_callback("life", owner_id, "profile"))],
         [InlineKeyboardButton("🧭 حرکت", callback_data=_owner_callback("move", owner_id, "panel")),
          InlineKeyboardButton("🌍 زندگی", callback_data=_owner_callback("life", owner_id, "menu"))],
+        [InlineKeyboardButton("🏠 خانه", callback_data=_owner_callback("life", owner_id, "home")),
+         InlineKeyboardButton("👨‍👩‍👧 خانواده", callback_data=_owner_callback("life", owner_id, "family"))],
         [InlineKeyboardButton("🏪 مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list")),
          InlineKeyboardButton("🎒 کوله‌پشتی", callback_data=_owner_callback("life", owner_id, "inventory"))],
         [InlineKeyboardButton("💼 کار", callback_data=_owner_callback("life", owner_id, "advwork")),
@@ -510,6 +611,8 @@ async def life_callback(update, context):
     text = ""
     markup = life_keyboard(owner_id)
     if key == "menu": text = "🌍 سیستم‌های زندگی\n\nیکی از بخش‌ها را انتخاب کن:"
+    elif key == "home": text = home_text(player)
+    elif key == "family": text = family_text(player)
     elif key == "panel": text = f"🎮 پنل شخصی {player.display_name}\n\n{player.status_text()}"; markup = group_panel_keyboard(uid) if owner_id else life_keyboard(owner_id)
     elif key == "status": text = render_status_card(player, gt)
     elif key == "profile": text = render_profile(player)
@@ -758,7 +861,7 @@ async def help_cmd(update, context):
 async def handle_message(update, context):
     user = update.effective_user
     uid = str(user.id)
-    text = (update.message.text or "").strip()
+    text = (update.message.text or "").strip().replace("\u200c", "").replace("\ufeff", "")
 
     # فقط فرمان‌های صریح فارسی/انگلیسی پردازش شوند؛ متن عادی نادیده گرفته شود.
     # هنگام انتخاب شهر، خود نام شهر نیز ورودی معتبر است.
@@ -826,6 +929,17 @@ async def handle_message(update, context):
     player = get_or_load_player(uid)
     if not player and text not in ["شروع", "استارت", "کمک", "راهنما"]:
         await update.message.reply_text("اول «شروع» یا /start را بزن.")
+        return
+
+    # مسیرهای قطعی پنل اصلی؛ قبل از سایر شاخه‌ها تا دکمه‌های Reply Keyboard همیشه پاسخ بگیرند.
+    if text in ["خانه", "خونه", "home"]:
+        await update.message.reply_text(home_text(player), reply_markup=life_keyboard(uid))
+        return
+    if text in ["خانواده", "family"]:
+        await update.message.reply_text(family_text(player), reply_markup=life_keyboard(uid))
+        return
+    if text in ["زندگی", "life"]:
+        await update.message.reply_text("🌱 سیستم زندگی\n\n" + home_text(player) + "\n\n" + family_text(player), reply_markup=life_keyboard(uid))
         return
 
     # فرمان‌های فارسی معادل دستورات Slash
@@ -1170,7 +1284,36 @@ async def handle_message(update, context):
         await help_cmd(update, context)
         return
 
-    elif text in ["ادمین"] or text.startswith("ادمین"):
+    elif text.startswith("ادمین ") or text.startswith("admin "):
+        if not is_admin(str(user.id)):
+            return
+        parts = text.split()
+        sub = parts[1].lower() if len(parts) > 1 else "panel"
+        if sub in ["player", "بازیکن"] and len(parts) >= 3:
+            target = parts[2]
+            data = load_player_by_numeric_id(target) if PSYCOPG2_AVAILABLE else None
+            if not data:
+                await update.message.reply_text("❌ بازیکن پیدا نشد.")
+                return
+            alive = data.get("alive", True)
+            await update.message.reply_text(
+                f"👤 بازیکن\nID: {data.get('numeric_id','—')}\nنام: {data.get('name','—')} ({data.get('gender','—')})\n"
+                f"سن: {(data.get('age_days') or 0)/10:.1f} سال\nشغل: {data.get('job','بیکار')}\nشهر: {data.get('city','—')}\n"
+                f"پول: {int(data.get('money') or 0):,} تومان\nوضعیت: {'زنده' if alive else 'فوت‌شده'}")
+            return
+        if sub == "add" and len(parts) >= 3 and is_super_admin(str(user.id)):
+            ok = add_admin(parts[2])
+            await update.message.reply_text("✅ ادمین اضافه شد." if ok else "ℹ️ این کاربر از قبل ادمین است.")
+            return
+        if sub == "remove" and len(parts) >= 3 and is_super_admin(str(user.id)):
+            from admin import remove_admin
+            ok = remove_admin(parts[2])
+            await update.message.reply_text("✅ ادمین حذف شد." if ok else "❌ حذف انجام نشد.")
+            return
+        await admin_cmd(update, context)
+        return
+
+    elif text in ["ادمین"]:
         if str(user.id) == SUPER_ADMIN_ID or is_super_admin(str(user.id)):
             if "addadmin" in text:
                 parts = text.split()
@@ -1226,6 +1369,8 @@ def main_bot():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("admin", admin_cmd))
+    app.add_handler(CallbackQueryHandler(admin_callback, pattern=r"^admin:"))
     app.add_handler(CommandHandler("panel", panel_cmd))
     app.add_handler(CommandHandler("city", city_cmd))
     app.add_handler(CommandHandler("status", status_cmd))
