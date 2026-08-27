@@ -102,6 +102,7 @@ def init_database():
                 x               INT DEFAULT 0,
                 y               INT DEFAULT 0,
                 god_mode        BOOLEAN DEFAULT FALSE,
+                alive           BOOLEAN DEFAULT TRUE,
                 marital_status  VARCHAR(32) DEFAULT 'مجرد',
                 bio             TEXT DEFAULT '',
                 admin_password_hash VARCHAR(64),
@@ -133,6 +134,7 @@ def init_database():
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_age_game_day INT DEFAULT 0",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS inventory JSONB DEFAULT '{}'",
             "ALTER TABLE players ADD COLUMN IF NOT EXISTS life_data JSONB DEFAULT '{}'",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS alive BOOLEAN DEFAULT TRUE",
         ]:
             cur.execute(migration)
 
@@ -144,6 +146,8 @@ def init_database():
         """)
 
         cur.execute("""
+            CREATE TABLE IF NOT EXISTS world_state (id INT PRIMARY KEY, game_day INT DEFAULT 0, data JSONB DEFAULT '{}');
+            INSERT INTO world_state (id, game_day, data) VALUES (1,0,'{}') ON CONFLICT (id) DO NOTHING;
             CREATE INDEX IF NOT EXISTS idx_players_player_id ON players(player_id);
             CREATE INDEX IF NOT EXISTS idx_players_numeric_id ON players(numeric_id);
         """)
@@ -160,6 +164,18 @@ def init_database():
             conn.close()
         return False
 
+
+def leaderboard_rows(limit=10):
+    conn=get_connection()
+    if not conn: return []
+    try:
+        cur=conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT name, city, money, age_days FROM players ORDER BY money DESC LIMIT %s", (int(limit),))
+        rows=cur.fetchall(); cur.close(); conn.close(); return [dict(x) for x in rows]
+    except Exception:
+        try: conn.close()
+        except Exception: pass
+        return []
 
 def save_player(char) -> bool:
     """ذخیره یا آپدیت بازیکن"""
@@ -180,7 +196,7 @@ def save_player(char) -> bool:
                 player_id, numeric_id, name, job, display_name, gender, city, neighborhood,
                 home, family, birth_year, age_days, hunger, thirst, fatigue, health, mental,
                 money, location, x, y, god_mode, marital_status, bio, admin_password_hash,
-                children, family_members, home_data, inventory, life_data, last_age_game_day, updated_at, last_login
+                children, family_members, home_data, inventory, life_data, last_age_game_day, alive, updated_at, last_login
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
@@ -216,6 +232,7 @@ def save_player(char) -> bool:
                 inventory = EXCLUDED.inventory,
                 life_data = EXCLUDED.life_data,
                 last_age_game_day = EXCLUDED.last_age_game_day,
+                alive = EXCLUDED.alive,
                 updated_at = CURRENT_TIMESTAMP,
                 last_login = CURRENT_TIMESTAMP;
         """, (
@@ -250,6 +267,7 @@ def save_player(char) -> bool:
             inventory_json,
             life_data_json,
             getattr(char, 'last_age_game_day', 0),
+            getattr(char, 'alive', True),
         ))
         conn.commit()
         cur.close()
@@ -302,6 +320,35 @@ def load_player_by_numeric_id(numeric_id: str):
         return None
 
 
+def _normalize_family_members(members):
+    """Repair old family records so relation and name gender can never conflict."""
+    male = ["رضا", "محمد", "حسین", "مجید", "امیر", "مهدی", "علی", "حامد", "سعید", "نوید", "کیان", "پارسا"]
+    female = ["مریم", "زهرا", "فاطمه", "سارا", "نسرین", "الهام", "سمیه", "نازنین", "آوا", "هانا", "یسنا", "نیکا", "رها"]
+    out=[]
+    for m in members or []:
+        if not isinstance(m, dict):
+            continue
+        m=dict(m)
+        rel=str(m.get("relation", ""))
+        if rel in ("مادر", "خواهر"):
+            if m.get("name") not in female:
+                m["name"] = __import__("random").choice(female)
+        elif rel in ("پدر", "برادر"):
+            if m.get("name") not in male:
+                m["name"] = __import__("random").choice(male)
+        # Age/job are also normalized to prevent impossible child statuses.
+        try:
+            age=int(m.get("age", 0))
+            if rel in ("خواهر", "برادر"):
+                if age < 3: m["job"]="نوزاد"
+                elif age < 7: m["job"]="کودکستان"
+                elif age < 19: m["job"]="دانش‌آموز"
+                else: m["job"]="جوان مستقل"
+        except Exception:
+            pass
+        out.append(m)
+    return out
+
 def apply_loaded_data(char, data: dict):
     """اعمال داده‌های لود شده روی آبجکت شخصیت"""
     if not data:
@@ -312,13 +359,21 @@ def apply_loaded_data(char, data: dict):
     char.job = data.get("job", getattr(char, "job", "بیکار"))
     char.display_name = data.get("display_name", char.name)
     char.gender = data.get("gender", char.gender)
+    # سازگاری داده‌های قدیمی: اگر نام با جنسیت ثبت‌شده ناسازگار باشد، نام هماهنگ تولید می‌شود.
+    try:
+        from bot import MALE_NAMES, FEMALE_NAMES
+        valid = MALE_NAMES if char.gender == "پسر" else FEMALE_NAMES
+        if char.name not in valid:
+            char.name = valid[0]
+    except Exception:
+        pass
     char.city = data.get("city", char.city)
     char.neighborhood = data.get("neighborhood", char.neighborhood)
     char.home = data.get("home", char.home)
     char.family = data.get("family", char.family)
     char.birth_year = data.get("birth_year", 1385)
     char.age_days = max(170, data.get("age_days", 170))
-    char.family_members = data.get("family_members") or getattr(char, 'family_members', [])
+    char.family_members = _normalize_family_members(data.get("family_members") or getattr(char, 'family_members', []))
     char.home_data = data.get("home_data") or getattr(char, 'home_data', {})
     inventory = data.get("inventory", {})
     if isinstance(inventory, str):
@@ -346,6 +401,7 @@ def apply_loaded_data(char, data: dict):
     char.x = data.get("x", 0)
     char.y = data.get("y", 0)
     char.god_mode = data.get("god_mode", False)
+    char.alive = data.get("alive", True)
     char.marital_status = data.get("marital_status", "مجرد")
     char.bio = data.get("bio", "")
     char.admin_password_hash = data.get("admin_password_hash", "")
@@ -353,3 +409,15 @@ def apply_loaded_data(char, data: dict):
     if isinstance(children, str):
         children = json.loads(children)
     char.children = children or []
+    # نرمال‌سازی فرزندان قدیمی و جلوگیری از نمایش سن/شغل نامتناسب.
+    for child in char.children:
+        try:
+            child["age_days"] = int(child.get("age_days", child.get("age", 0)))
+            child["age"] = child["age_days"] // 10
+            age = child["age"]
+            if age < 3: child["stage"] = "نوزاد/خردسال"; child["job"] = "نوزاد"
+            elif age < 7: child["stage"] = "کودکستان"; child["job"] = "کودکستان"
+            elif age < 19: child["stage"] = "دانش‌آموز"; child["job"] = "دانش‌آموز"
+            else: child["stage"] = "بزرگسال"; child["job"] = child.get("job", "جوان مستقل")
+        except Exception:
+            continue

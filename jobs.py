@@ -5,6 +5,7 @@
 
 import random
 from difficulty import hard_reward, hard_damage
+from advanced_simulation import ensure_advanced
 
 JOBS = {
     "بیکار": {
@@ -82,7 +83,9 @@ def work(char, job_name: str) -> str:
     if not ok:
         return msg
     job = JOBS[job_name]
-    earned = hard_reward(random.randint(job["salary_min"], job["salary_max"]))
+    d = ensure_advanced(char)
+    econ = d.get("economy", {})
+    earned = hard_reward(random.randint(job["salary_min"], job["salary_max"]), inflation=econ.get("inflation",0.18), unemployment=econ.get("unemployment",0.08))
     char.money += earned
     char.fatigue = min(100, char.fatigue + hard_damage(job["energy_cost"]))
     char.hunger = min(120, char.hunger + hard_damage(random.randint(5, 12)))

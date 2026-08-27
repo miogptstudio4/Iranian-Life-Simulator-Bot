@@ -31,13 +31,14 @@ from jobs import JOBS, list_jobs, work, can_take_job
 from combat import street_fight
 from time_system import GameTime
 from database import (
-    init_database, save_player, load_player_by_numeric_id,
+    init_database, save_player, load_player_by_numeric_id, leaderboard_rows,
     apply_loaded_data, PSYCOPG2_AVAILABLE
 )
 from render import render_status_card, render_profile
 from life_system import make_family, home_for_family, home_text, family_text, daily_life_event, advance_life_age
 from map_system import DIRECTIONS, generate_location_name, get_random_description
 from advanced_simulation import (ensure_advanced, daily_tick, advanced_status, city_economy_adv, work_day, train_skill, bank_deposit_adv, bank_withdraw_adv, take_loan_adv, meet_npc, relationship_action, commit_crime_adv, start_business_adv, run_business_adv, stock_trade_adv)
+from living_world import news_text, simulate_npcs
 from life_features import (ensure_data, education_text, study, bank_text, bank_deposit, bank_withdraw, bank_loan,
     housing_text, rent_house, buy_house, vehicle_text, buy_vehicle, relationship_text, meet_partner, marry, have_child,
     legal_text, commit_crime, pay_fine, hospital, business_text, start_business, run_business, stock_text, stock_trade,
@@ -88,6 +89,21 @@ def start_render_health_server():
 MALE_NAMES = ["پارسا", "آرین", "کیان", "سپهر", "نیما", "آرش", "رادین", "ایلیا", "مانی", "سینا", "رضا", "امیر"]
 FEMALE_NAMES = ["یسنا", "آوا", "هلیا", "نازنین", "سارا", "دنیا", "مهسا", "آیدا", "نیکا", "باران", "هستی", "کیمیا"]
 
+
+def child_stage(age: int) -> str:
+    if age < 3: return "نوزاد/خردسال"
+    if age < 7: return "کودکستان"
+    if age < 13: return "دانش‌آموز ابتدایی"
+    if age < 16: return "دانش‌آموز متوسطه"
+    if age < 19: return "دانش‌آموز دبیرستان"
+    return "بزرگسال"
+
+
+def child_job_for_age(age: int) -> str:
+    if age < 7: return "بدون شغل"
+    if age < 19: return "دانش‌آموز"
+    return "جوان مستقل"
+
 # فقط شهرهای ایران برای شروع
 IRAN_CITY_SET = set(load_full_iran_cities(IRAN_CITIES))
 
@@ -98,9 +114,9 @@ class BotPlayer:
         self.numeric_id = str(numeric_id)
         self.player_id = generate_player_id()
         self.gender = random.choice(["پسر", "دختر"])
-        self.name = name or random.choice(MALE_NAMES if self.gender == "پسر" else FEMALE_NAMES)
-        if name and not any(name == n for n in MALE_NAMES + FEMALE_NAMES):
-            self.name = name  # اسم تلگرام
+        # نام شخصیت باید با جنسیت شخصیت هماهنگ باشد؛ نام تلگرام دیگر جای نام شخصیت را نمی‌گیرد.
+        self.name = random.choice(MALE_NAMES if self.gender == "پسر" else FEMALE_NAMES)
+        self.telegram_name = name or "بازیکن"
         self.display_name = self.name
         self.city = city or random.choice(list(IRAN_CITY_SET) if IRAN_CITY_SET else CITY_LIST[:30])
         city_data = CITIES.get(self.city, {})
@@ -323,15 +339,22 @@ async def start(update, context):
         )
         return
 
-    # Dead player: /start explicitly begins a new life.
+    # Dead player: if there is an adult child, continue the family line automatically.
     if player and not player.alive:
+        children = [c for c in (getattr(player, "children", []) or []) if int(c.get("age_days",0)) >= 190 and c.get("alive",True)]
+        if children:
+            heir=max(children, key=lambda c:int(c.get("age_days",0)))
+            legacy=max(0,int(player.money))+sum(int(p.get("value",0)) for p in ensure_advanced(player).get("properties",[]))//2
+            player.name=heir.get("name", player.name); player.gender=heir.get("gender", player.gender); player.age_days=max(190,int(heir.get("age_days",190))); player.money=legacy
+            player.alive=True; player.job="بیکار"; player.marital_status="مجرد"; player.children=[]; player.life_data["generation"]=int(player.life_data.get("generation",1))+1
+            player.life_data["legacy"]={"from":heir.get("name"),"amount":legacy}
+            if PSYCOPG2_AVAILABLE:
+                try: save_player(player)
+                except Exception: pass
+            await update.message.reply_text(f"👨‍👩‍👧 نسل بعدی آغاز شد!\n\n👤 وارث: {player.name} ({player.gender})\n🎂 سن: {player.age_days//10} سال\n💰 میراث منتقل‌شده: {legacy:,} تومان\n\nزندگی نسل جدید ادامه دارد.", reply_markup=group_panel_keyboard(uid) if update.effective_chat.type != "private" else main_keyboard())
+            return
         WAITING_CITY.add(uid)
-        await update.message.reply_text(
-            f"💀 زندگی قبلی {player.display_name} تمام شده است.\n\n"
-            "اگر می‌خواهی یک زندگی کاملاً جدید بسازی، شهر شروع را انتخاب کن.\n"
-            "🏙 نام یکی از شهرهای ایران را بفرست یا در گروه از /city تهران استفاده کن.",
-            reply_markup=ReplyKeyboardRemove() if update.effective_chat.type == "private" else None,
-        )
+        await update.message.reply_text(f"💀 زندگی قبلی {player.display_name} تمام شده است.\n\nفرزند بالغی برای ادامه نسل وجود ندارد؛ زندگی جدیدت را انتخاب کن.\n🏙 نام یکی از شهرهای ایران را بفرست.", reply_markup=ReplyKeyboardRemove() if update.effective_chat.type == "private" else None)
         return
 
     # First ever start: create only after city selection.
@@ -444,7 +467,7 @@ def life_keyboard(owner_id: str | None = None):
         [InlineKeyboardButton("🏠 مسکن", callback_data=_owner_callback("life", owner_id, "housing")), InlineKeyboardButton("🔑 اجاره", callback_data=_owner_callback("life", owner_id, "rent")), InlineKeyboardButton("🏡 خرید خانه", callback_data=_owner_callback("life", owner_id, "buyhouse"))],
         [InlineKeyboardButton("🚗 خودرو و موتور", callback_data=_owner_callback("life", owner_id, "vehicles"))],
         [InlineKeyboardButton("❤️ روابط", callback_data=_owner_callback("life", owner_id, "relationship")), InlineKeyboardButton("💞 آشنایی/قرار", callback_data=_owner_callback("life", owner_id, "meet")), InlineKeyboardButton("💍 ازدواج", callback_data=_owner_callback("life", owner_id, "marry"))],
-        [InlineKeyboardButton("👶 فرزند", callback_data=_owner_callback("life", owner_id, "child"))],
+        [InlineKeyboardButton("👶 فرزند", callback_data=_owner_callback("life", owner_id, "child")), InlineKeyboardButton("👨‍👩‍👧 فرزندان", callback_data=_owner_callback("life", owner_id, "children"))],
         [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data=_owner_callback("life", owner_id, "legal")), InlineKeyboardButton("⚠️ جرم", callback_data=_owner_callback("life", owner_id, "crime")), InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
         [InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
         [InlineKeyboardButton("🏥 بیمارستان", callback_data=_owner_callback("life", owner_id, "hospital")), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data=_owner_callback("life", owner_id, "cityeconomy"))],
@@ -531,6 +554,18 @@ async def life_callback(update, context):
     elif key == "meet": text = meet_partner(player)
     elif key == "marry": text = marry(player)
     elif key == "child": text = have_child(player)
+    elif key == "children":
+        children = getattr(player, "children", []) or []
+        if not children:
+            text = "👨‍👩‍👧 هنوز فرزندی نداری."
+        else:
+            lines = ["👨‍👩‍👧 فرزندان تو:"]
+            for i, child in enumerate(children, 1):
+                age = int(child.get("age_days", child.get("age", 0)) // 10)
+                stage = child_stage(age)
+                job = child_job_for_age(age)
+                lines.append(f"{i}. {child.get('name','بدون نام')} ({child.get('gender','نامشخص')}) | {age} سال | {stage} | {job} | ❤️ {child.get('health', 100)}%")
+            text = "\n".join(lines)
     elif key == "legal": text = legal_text(player)
     elif key == "crime": text = commit_crime(player)
     elif key == "fine": text = pay_fine(player)
@@ -710,6 +745,7 @@ async def help_cmd(update, context):
         "🎒 کوله‌پشتی → وسایل خریداری‌شده\n"
         "شهرها → فهرست شهرهای ایران\n"
         "سفر نام شهر → سفر به شهر دیگر\n"
+        "📰 اخبار / روزنامه / مردم / رتبه‌بندی / کالاها\n"
         "زمان\n"
         "🏫 تحصیل / 🏦 بانک / 🏠 مسکن / 🚗 خودرو\n"
         "❤️ روابط / 👶 فرزند / ⚖️ قانون / 🏥 بیمارستان\n"
@@ -733,14 +769,14 @@ async def handle_message(update, context):
         "کوله‌پشتی", "کیف", "بانک", "مسکن", "خانه و ملک", "خودرو", "ماشین",
         "وسایل نقلیه", "روابط", "ازدواج", "قانون", "پلیس", "بیمارستان",
         "کسب و کار", "کسب‌وکار", "بورس", "سهام", "اقتصاد شهر", "مالیات",
-        "شمال", "جنوب", "شرق", "غرب", "ادمین",
+        "شمال", "جنوب", "شرق", "غرب", "شهرها", "فرزندان", "بچه‌ها", "سفر", "ادمین", "اخبار", "روزنامه", "مردم", "NPC", "ان پی سی", "رتبه‌بندی", "رتبه بندی", "لیدربورد", "کالاها",
         "status", "profile", "move", "life", "shop", "inventory", "home",
         "family", "rest", "jobs", "work", "fight", "time", "help",
         "bank", "city", "north", "south", "east", "west"
     }
     is_dynamic_command = (
         text.startswith("انتخاب شغل ") or text.startswith("ادمین ")
-        or text.startswith("شهر ") or text.startswith("city ")
+        or text.startswith("شهر ") or text.startswith("city ") or text.startswith("سفر ")
     )
     if uid not in WAITING_CITY and text not in explicit_commands and not is_dynamic_command:
         return
@@ -782,6 +818,36 @@ async def handle_message(update, context):
         return
 
     # فرمان‌های فارسی معادل دستورات Slash
+    if text in ["اخبار", "روزنامه", "اخبار اقتصادی"]:
+        d=ensure_advanced(player)
+        await update.message.reply_text(news_text(d["world_economy"], player.city))
+        return
+    if text in ["مردم", "NPC", "ان پی سی"]:
+        d=ensure_advanced(player)
+        npcs=d.get("npcs") or {}
+        if not npcs:
+            from advanced_simulation import update_npc_population
+            npcs=update_npc_population(player)
+        lines=["👥 مردم اطراف تو:"]
+        for n in list(npcs.values())[:8]:
+            lines.append(f"• {n['name']} ({n['gender']}) | {n['age']} سال | {n.get('job','بیکار')} | هدف: {n.get('goal','—')}")
+        await update.message.reply_text("\n".join(lines))
+        return
+    if text in ["رتبه‌بندی", "رتبه بندی", "لیدربورد"]:
+        rows=leaderboard_rows(10)
+        if not rows:
+            await update.message.reply_text("🏆 هنوز اطلاعات کافی برای رتبه‌بندی وجود ندارد.")
+            return
+        lines=["🏆 رتبه‌بندی ثروت"]
+        for i,r in enumerate(rows,1): lines.append(f"{i}. {r.get('name','بازیکن')} — {int(r.get('money') or 0):,} تومان — {r.get('city','—')}")
+        await update.message.reply_text("\n".join(lines))
+        return
+    if text in ["کالاها", "بازار کالا"]:
+        d=ensure_advanced(player); w=d["world_economy"]
+        lines=["🏪 بازار کالا — عرضه و تقاضا"]
+        for g,x in w["goods"].items(): lines.append(f"• {g}: عرضه {x['supply']:.0f} | تقاضا {x['demand']:.0f} | ضریب قیمت ×{x['price']:.2f}")
+        await update.message.reply_text("\n".join(lines))
+        return
     if text in ["شروع", "استارت"]:
         await start(update, context)
         return
@@ -790,6 +856,42 @@ async def handle_message(update, context):
         return
     if text in ["راهنما"]:
         await help_cmd(update, context)
+        return
+
+    # ----- فرمان «سفر <نام شهر>» -----
+    if text.startswith("سفر "):
+        target = find_iran_city(text[5:].strip())
+        if not target:
+            await update.message.reply_text("❌ شهر مقصد پیدا نشد. مثال: سفر تهران")
+            return
+        if target == player.city if 'player' in locals() else False:
+            await update.message.reply_text(f"📍 همین الان در {target} هستی.")
+            return
+        # بازیکن را قبل از سفر لود می‌کنیم
+        travel_player = get_or_load_player(uid)
+        if not travel_player:
+            await update.message.reply_text("اول «شروع» یا /start را بزن.")
+            return
+        cost = hard_cost(random.randint(150_000, 1_500_000))
+        if travel_player.money < cost:
+            await update.message.reply_text(f"💸 پول کافی برای سفر نداری. هزینه تقریبی: {cost:,} تومان")
+            return
+        travel_player.money -= cost
+        travel_player.city = target
+        city_data = CITIES.get(target, {})
+        travel_player.neighborhood = random.choice(city_data.get("neighborhoods", ["مرکز شهر"]))
+        travel_player.location = "ترمینال / ایستگاه ورودی شهر"
+        gt = GAME_TIMES.setdefault(uid, GameTime(start_hour=random.randint(7, 20)))
+        gt.advance(random.randint(180, 480))
+        age_msgs = advance_life_age(travel_player, gt.day)
+        smart_msgs = daily_tick(travel_player, gt.day)
+        reply = f"🚌 به {target} سفر کردی.\n💸 هزینه: {cost:,} تومان\n📍 {travel_player.neighborhood}\n💰 موجودی: {travel_player.money:,} تومان"
+        if age_msgs: reply += "\n\n" + "\n".join(age_msgs)
+        if smart_msgs: reply += "\n\n" + "\n".join(smart_msgs[-3:])
+        if PSYCOPG2_AVAILABLE:
+            try: save_player(travel_player)
+            except Exception: pass
+        await update.message.reply_text(reply)
         return
 
     # ----- فرمان «شهر <نام شهر>» -----
@@ -912,6 +1014,24 @@ async def handle_message(update, context):
         await update.message.reply_text(reply, reply_markup=markup)
         return
 
+    if text in ["فرزندان", "بچه‌ها"]:
+        children = getattr(player, "children", []) or []
+        if not children:
+            await update.message.reply_text("👨‍👩‍👧 هنوز فرزندی نداری.")
+            return
+        lines=["👨‍👩‍👧 فرزندان تو:"]
+        for i,c in enumerate(children,1):
+            age=int(c.get("age_days", c.get("age",0))//10)
+            if age < 3: stage="نوزاد/خردسال"
+            elif age < 7: stage="کودکستان"
+            elif age < 13: stage="دانش‌آموز ابتدایی"
+            elif age < 16: stage="دانش‌آموز متوسطه"
+            elif age < 19: stage="دانش‌آموز دبیرستان"
+            else: stage="بزرگسال"
+            lines.append(f"{i}. {c.get('name','بدون نام')} ({c.get('gender','نامشخص')}) | {age} سال | {stage} | ❤️ {c.get('health',100)}%")
+        await update.message.reply_text("\n".join(lines))
+        return
+
     if text in ["شهرها", "cities"]:
         cities = sorted(IRAN_CITY_SET)
         reply = f"🏙 فهرست شهرهای ایران: {len(cities)} شهر در دادهٔ فعال\n\n" + "، ".join(cities[:80]) + "\n\nبرای سفر: «سفر نام شهر»"
@@ -994,7 +1114,8 @@ async def handle_message(update, context):
             reply += "\n\n💀 مردی! برای شروع مجدد /start بزن."
 
     elif text in ["شغل", "jobs"]:
-        reply = "مشاغل موجود:\n" + list_jobs() + "\n\nبرای انتخاب:\nانتخاب شغل نام_شغل"
+        econ = ensure_advanced(player)["economy"]
+        reply = (f"💼 بازار کار شهر: {econ.get('unemployment', 0.08)*100:.1f}% بیکار | ظرفیت اشتغال: {econ.get('job_market', 50)}%\n\nمشاغل موجود:\n" + list_jobs() + "\n\nبرای انتخاب:\nانتخاب شغل نام_شغل")
 
     elif text.startswith("انتخاب شغل"):
         job_name = text.replace("انتخاب شغل", "").strip()
@@ -1019,6 +1140,9 @@ async def handle_message(update, context):
         reply = street_fight(player)
         if not player.alive:
             reply += "\n\n💀 مردی! برای شروع مجدد /start بزن."
+
+    elif text in ["اقتصاد", "تورم", "بیکاری", "اقتصاد شهر"]:
+        reply = city_economy_adv(player)
 
     elif text in ["زمان", "time"]:
         reply = f"🕐 {gt.formatted()}"

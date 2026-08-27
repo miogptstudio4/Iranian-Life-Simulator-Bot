@@ -58,6 +58,9 @@ def education_text(char):
 
 def study(char, gt):
     d = ensure_data(char)["education"]
+    age = age_years(char)
+    if age < 17:
+        return "🏫 هنوز در سن مدرسه هستی؛ بازی اصلی از ۱۷ سالگی شروع می‌شود."
     if d["level"] == "لیسانس":
         return "🎓 مدرک لیسانس رو گرفتی. برای کار تخصصی آماده‌ای."
     if age_years(char) < 18:
@@ -197,143 +200,65 @@ def have_child(char):
     if char.marital_status != "متأهل": return "❌ برای فرزندآوری باید متأهل باشی."
     if age_years(char) < 20: return "❌ برای داشتن فرزند کمی زوده؛ حداقل ۲۰ سال."
     if len(getattr(char, "children", [])) >= 5: return "👶 فعلاً تعداد فرزندانت به سقف سیستم رسیده."
-    child = {"name": random.choice(["آراد", "آوا", "نیما", "هانا", "رادین", "یسنا"]), "gender": random.choice(["پسر", "دختر"]), "health": random.randint(75, 100), "age": 0}
+    male = ["آراد", "نیما", "رادین", "کیان", "پارسا", "سام", "یونس"]
+    female = ["آوا", "هانا", "یسنا", "نیکا", "باران", "هلیا", "رها"]
+    gender = random.choice(["پسر", "دختر"])
+    name = random.choice(male if gender == "پسر" else female)
+    child = {"name": name, "gender": gender, "health": random.randint(75, 100), "age_days": 0, "age": 0, "alive": True}
     char.children.append(child)
-    return f"👶 فرزند جدیدت به دنیا اومد: {child['name']} ({child['gender']})"
+    return f"👶 فرزند جدیدت به دنیا اومد: {child['name']} ({child['gender']})\n🍼 سن: ۰ سال | وضعیت: نوزاد"
 
-
+# Compatibility wrappers for the advanced bot panel. Kept lazy to avoid circular imports.
 def legal_text(char):
-    l = ensure_data(char)["legal"]
-    return f"⚖️ قانون و پلیس\n🚨 تحت تعقیب: {l['wanted']}%\n📋 سابقه: {l['record']}\n🔒 زندان: {l['jail_days']} روز\n💸 جریمه: {l['fine']:,} تومان"
-
-
+    from advanced_simulation import ensure_advanced
+    d=ensure_advanced(char)["legal"]
+    return f"⚖️ قانون\n📁 سابقه: {d['record']}\n💸 جریمه: {d['fines']:,}\n🚔 زندان: {d['jail_days']} روز"
 def commit_crime(char):
-    l = ensure_data(char)["legal"]
-    if age_years(char) < 18: return "❌ این فعالیت فقط برای شخصیت بزرگسال در دسترسه."
-    chance = min(0.999999, 0.95 + l["wanted"] / 2000)
-    if random.random() < chance:
-        l["record"] += 1; l["wanted"] = min(100, l["wanted"] + random.randint(20, 45)); l["fine"] += hard_cost(random.randint(500_000, 5_000_000)); l["jail_days"] += random.randint(1, 3)
-        return f"🚔 پلیس گیرت انداخت! سابقه +۱ و محکوم به زندان شدی: {l['jail_days']} روز"
-    gain = hard_reward(random.randint(500_000, 8_000_000)); char.money += gain; l["wanted"] = min(100, l["wanted"] + random.randint(8, 20))
-    return f"⚠️ جرم انجام دادی و {gain:,} تومان به دست آوردی؛ تحت تعقیب شدی."
-
-
+    from advanced_simulation import commit_crime_adv
+    return commit_crime_adv(char)
 def pay_fine(char):
-    l = ensure_data(char)["legal"]
-    if l["fine"] <= 0: return "✅ جریمه‌ای نداری."
-    if char.money < l["fine"]: return f"💸 جریمه‌ات {l['fine']:,} تومنه."
-    amount = l["fine"]; char.money -= amount; l["fine"] = 0; l["wanted"] = max(0, l["wanted"] - 25)
-    return f"⚖️ جریمه پرداخت شد: {amount:,} تومان"
-
-
+    from advanced_simulation import ensure_advanced
+    d=ensure_advanced(char); amount=int(d['legal'].get('fines',0))
+    if amount<=0: return "✅ جریمه‌ای نداری."
+    if char.money<amount: return f"💸 برای پرداخت جریمه {amount:,} تومان لازم داری."
+    char.money-=amount; d['legal']['fines']=0; return f"✅ جریمه {amount:,} تومان پرداخت شد."
 def hospital(char):
-    if char.health >= 95: return "❤️ سلامتت خوبه و فعلاً نیازی به بیمارستان نداری."
-    cost = hard_cost(max(300_000, (100 - char.health) * 120_000))
-    if char.money < cost: return f"🏥 هزینه درمان حدود {cost:,} تومنه."
-    char.money -= cost; char.health = min(100, char.health + random.randint(15, 35)); char.fatigue = max(0, char.fatigue - 10)
-    return f"🏥 درمان شدی. هزینه: {cost:,} تومان\n❤️ سلامت: {char.health}%"
-
-
+    from advanced_simulation import ensure_advanced, living_cost
+    d=ensure_advanced(char); cost=living_cost(char,500_000)
+    if char.money<cost: return f"🏥 هزینه درمان {cost:,} تومان است."
+    char.money-=cost; char.health=min(100,char.health+random.randint(8,20)); d['needs']['stress']=max(0,d['needs']['stress']-8); return f"🏥 درمان انجام شد. هزینه: {cost:,} تومان. سلامت: {char.health}%"
 def business_text(char):
-    b = ensure_data(char)["business"]
-    if not b["active"]: return "🏢 کسب‌وکار\nهنوز کسب‌وکاری نداری.\nسرمایه شروع: ۱۰۰ میلیون تومان."
-    return f"🏢 {b['name']}\n📦 نوع: {b['type']}\n💰 سرمایه: {b['capital']:,}\n📈 درآمد آخر: {b['revenue']:,}\n👥 کارکنان: {b['employees']}\n⭐ سطح: {b['level']}"
-
-
+    from advanced_simulation import ensure_advanced
+    bs=ensure_advanced(char).get('businesses',[]); return "🏢 کسب‌وکار\n"+("هنوز کسب‌وکاری نداری." if not bs else "\n".join(f"• {b.get('name','کسب‌وکار')} | سرمایه {b.get('capital',0):,} | فعال: {b.get('active',True)}" for b in bs))
 def start_business(char):
-    if age_years(char) < 18: return "❌ راه‌اندازی کسب‌وکار از ۱۸ سالگی."
-    b = ensure_data(char)["business"]
-    cost = hard_cost(100_000_000)
-    if b["active"]: return "🏢 از قبل کسب‌وکار داری."
-    if char.money < cost: return f"💸 حداقل سرمایه شروع {cost:,} تومنه."
-    char.money -= cost; b.update(active=True, name=random.choice(["کسب‌وکار پارسا", "بازرگانی نوین", "فروشگاه آینده"]), type=random.choice(["فروشگاهی", "خدماتی", "آنلاین"]), capital=cost, revenue=0, employees=0, level=1)
-    return f"🏢 کسب‌وکارت راه افتاد: {b['name']}"
-
-
+    from advanced_simulation import start_business_adv
+    return start_business_adv(char,"کسب‌وکار محلی")
 def run_business(char):
-    b = ensure_data(char)["business"]
-    if not b["active"]: return "اول کسب‌وکار راه‌اندازی کن."
-    opp, cost = economy_factor(char)
-    revenue = hard_reward(int(random.randint(8_000_000, 30_000_000) * opp))
-    expenses = int(revenue * random.uniform(.45, .75) * cost)
-    profit = max(0, revenue - expenses)
-    b["revenue"] = revenue; b["capital"] += profit; char.money += profit
-    return f"📊 کسب‌وکارت فعالیت کرد.\n💵 فروش: {revenue:,}\n💸 هزینه: {expenses:,}\n📈 سود: {profit:,} تومان"
-
-
+    from advanced_simulation import run_business_adv
+    d=ensure_advanced(char); return run_business_adv(char) if d.get('businesses') else "❌ ابتدا کسب‌وکار راه‌اندازی کن."
 def stock_text(char):
-    s = ensure_data(char)["stocks"]
-    if not s["holdings"]: return "📈 بورس\nسهام نداری.\nاز گزینه خرید سهام شروع کن."
-    lines=["📈 سبد سهام"]
-    for sym, item in s["holdings"].items():
-        lines.append(f"• {sym}: {item['shares']} سهم × {item['avg']:,} تومان")
-    return "\n".join(lines)
-
-
-def stock_trade(char, sym, buy=True):
-    market = {"فولاد": 2_000_000, "خودرو": 1_200_000, "فناوری": 3_500_000, "بانک": 1_800_000}
-    s = ensure_data(char)["stocks"]; price = hard_cost(market[sym])
-    if buy:
-        shares = 1
-        if char.money < price: return "💸 پول کافی برای خرید این سهم نداری."
-        char.money -= price
-        item=s["holdings"].setdefault(sym, {"shares":0,"avg":price})
-        item["avg"] = int((item["avg"]*item["shares"] + price)/(item["shares"]+1)); item["shares"] += shares
-        return f"📈 یک سهم {sym} خریدی: {price:,} تومان"
-    item=s["holdings"].get(sym)
-    if not item or item["shares"]<=0: return "❌ از این سهم نداری."
-    change = random.uniform(.85, 1.2); sell = int(price*change); item["shares"] -= 1; char.money += sell
-    if item["shares"] <= 0: del s["holdings"][sym]
-    return f"💹 یک سهم {sym} فروختی و {sell:,} تومان گرفتی."
-
-
-def city_economy_text(char):
-    from locations import CITIES
-    city=getattr(char, "city", "")
-    c=CITIES.get(city, {})
-    opp, cost=economy_factor(char)
-    return (f"🏙 اقتصاد {city}\n"
-            f"💼 فرصت شغلی: {c.get('opportunities','متوسط')}\n"
-            f"🏷 هزینه زندگی: {c.get('cost_of_living','متوسط')}\n"
-            f"📊 ضریب فرصت: {opp:.2f}x\n"
-            f"💸 ضریب هزینه: {cost:.2f}x\n"
-            f"🏘 محله فعلی: {getattr(char,'neighborhood','مرکز شهر')}")
-
-
-def serve_jail(char):
-    l=ensure_data(char)["legal"]
-    if l["jail_days"]<=0: return "🔓 زندانی نیستی."
-    l["jail_days"]-=1
-    char.mental=max(0,char.mental-random.randint(2,6)); char.fatigue=min(100,char.fatigue+5)
-    return f"🔒 یک روز از محکومیتت را گذراندی. روزهای باقی‌مانده: {l['jail_days']}"
-
-
+    from advanced_simulation import ensure_advanced
+    p=ensure_advanced(char).get('portfolio',{}); return "📈 بورس\n"+("سبد سهامت خالی است." if not p else "\n".join(f"• {k}: {v.get('qty',0)} سهم | میانگین {v.get('avg',0):,.0f}" for k,v in p.items()))
+def stock_trade(char,symbol,buy):
+    from advanced_simulation import stock_trade_adv
+    return stock_trade_adv(char,symbol,buy,1)
 def tax_text(char):
-    t=ensure_data(char)["tax"]
-    return f"🧾 مالیات\n💸 مالیات معوق: {t['owed']:,} تومان\n📅 آخرین تسویه: روز {t['last_settlement_day']}"
-
-
+    from advanced_simulation import ensure_advanced
+    tax=ensure_advanced(char).setdefault('tax',{'owed':0}); return f"🧾 مالیات\n💸 بدهی مالیاتی: {tax.get('owed',0):,} تومان"
 def pay_tax(char):
-    t=ensure_data(char)["tax"]
-    if t["owed"]<=0: return "✅ مالیات معوقی نداری."
-    if char.money<t["owed"]: return f"💸 مالیات معوق {t['owed']:,} تومنه."
-    amount=t["owed"]; char.money-=amount; t["owed"]=0
-    return f"🧾 مالیات پرداخت شد: {amount:,} تومان"
-
-
-def economic_tick(char, current_day):
-    """تسویه سالانه (هر ۱۰ روز بازی) و رویدادهای مالی."""
-    d=ensure_data(char); years=max(0, current_day//10)
-    t=d["tax"]
-    if years > t["last_settlement_day"]//10:
-        t["last_settlement_day"] = current_day
-        income = max(0, int(char.money*.002))
-        t["owed"] += income
-    b=d["bank"]
-    if b["loan"] and current_day >= b["loan_due"]:
-        installment=min(b["loan"], int(b["loan"]*.25))
-        if char.money>=installment:
-            char.money-=installment; b["loan"]-=installment; b["loan_due"] = current_day+3
-        else:
-            b["loan"] += int(b["loan"]*.05); b["loan_due"] = current_day+3
-    return []
+    from advanced_simulation import ensure_advanced
+    d=ensure_advanced(char); tax=d.setdefault('tax',{'owed':0}); amount=int(tax.get('owed',0))
+    if amount<=0: return "✅ مالیاتی برای پرداخت نداری."
+    if char.money<amount: return f"💸 برای پرداخت {amount:,} تومان مالیات پول کافی نداری."
+    char.money-=amount; tax['owed']=0; return f"✅ {amount:,} تومان مالیات پرداخت شد."
+def economic_tick(char,game_day):
+    from advanced_simulation import advance_economy
+    advance_economy(char); return None
+def city_economy_text(char):
+    from advanced_simulation import city_economy_adv
+    return city_economy_adv(char)
+def serve_jail(char):
+    from advanced_simulation import ensure_advanced
+    d=ensure_advanced(char); days=d['legal'].get('jail_days',0)
+    if days<=0: return "🚔 زندانی نیستی."
+    d['legal']['jail_days']=max(0,days-1); return f"🚔 یک روز زندان گذشت. روزهای باقی‌مانده: {d['legal']['jail_days']}"

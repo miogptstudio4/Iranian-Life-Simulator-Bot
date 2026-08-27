@@ -6,6 +6,7 @@ All long-term systems live in player.life_data so older saves remain compatible.
 from __future__ import annotations
 import random
 from datetime import datetime
+from living_world import ensure_world, advance_world, chain_event, advance_chain, market_price, job_chance, evolve_businesses, neighborhood_factor
 
 CITY_PROFILES = {
     "تهران": {"cost":1.45,"salary":1.35,"jobs":1.30,"crime":1.25,"home":1.55,"transport":1.15},
@@ -49,7 +50,7 @@ def _default():
         "skills": {k: 0 for k in SKILLS},
         "education": {"level":"دیپلم","field":None,"gpa":0.0,"credits":0,"scholarship":False,"studying":False},
         "career": {"job":"بیکار","level":1,"experience":0,"contract_days":0,"overtime":0,"part_time":[]},
-        "economy": {"inflation":0.18,"growth":0.01,"unemployment":0.08,"currency_value":1.0,"shock":None},
+        "economy": {"inflation":0.18,"growth":0.01,"unemployment":0.08,"currency_value":1.0,"shock":None,"job_market":50,"price_index":1.0},
         "bank": {"checking":0,"savings":0,"debt":0,"loan_rate":0.24,"credit":500,"missed":0},
         "properties": [],
         "vehicles": [],
@@ -63,6 +64,7 @@ def _default():
         "last_tick_day": 0,
         "event_cooldown": 0,
         "city_stats": {},
+        "world_economy": ensure_world({}),
     }
 
 def ensure_advanced(char):
@@ -76,8 +78,14 @@ def ensure_advanced(char):
     for k in SKILLS: d["skills"].setdefault(k,0)
     d["career"].setdefault("job", getattr(char,"job","بیکار"))
     d["economy"].setdefault("inflation",0.18)
+    d["economy"].setdefault("unemployment",0.08)
+    d["economy"].setdefault("growth",0.01)
+    d["economy"].setdefault("currency_value",1.0)
+    d["economy"].setdefault("job_market",50)
+    d["economy"].setdefault("price_index",1.0)
     d["bank"].setdefault("credit",500)
     d["legal"].setdefault("record",0)
+    d["world_economy"] = ensure_world(d.get("world_economy", {}))
     char.life_data = d
     return d
 
@@ -87,7 +95,11 @@ def city_profile(city):
 def price_factor(char):
     d=ensure_advanced(char)
     c=city_profile(getattr(char,"city",""))
-    return c["cost"] * (1 + max(-0.05, d["economy"]["inflation"]))
+    inflation=max(-0.02, float(d["economy"].get("inflation",0.18)))
+    unemployment=float(d["economy"].get("unemployment",0.08))
+    # هزینه زندگی با تورم و بیکاری شدیدتر می‌شود.
+    pressure=1.0 + min(18.0, max(0.0,inflation)*12.0) + min(10.0, unemployment*14.0)
+    return c["cost"] * pressure
 
 def living_cost(char, base):
     return max(1, int(base * price_factor(char)))
@@ -107,8 +119,17 @@ def work_day(char, overtime=False, part_time=False):
     if job not in JOB_CATALOG: return "💼 شغلی برای انجام دادن نداری."
     lo,hi,energy,req=JOB_CATALOG[job]
     skill = d["skills"].get("مدیریت",0) if req>=4 else max(d["skills"].values())
+    unemployment=float(d["economy"].get("unemployment",0.08))
+    # حتی پس از داشتن شغل، رکود می‌تواند شیفت را لغو یا قرارداد را موقتاً متوقف کند.
+    if random.random() < min(.72, unemployment * .65):
+        d["career"]["contract_days"] = max(0, d["career"].get("contract_days",0)-1)
+        d["needs"]["stress"]=min(100,d["needs"]["stress"]+random.randint(2,6))
+        return "📉 رکود اقتصادی: شیفت امروز لغو شد و درآمدی نداشتی."
     if skill < req*10:
         return f"⚠️ مهارت کافی برای عملکرد خوب در «{job}» نداری."
+    if random.random() > job_chance(d["world_economy"], char, skill):
+        d["needs"]["stress"]=min(100,d["needs"]["stress"]+random.randint(2,6))
+        return f"📉 بازار کار ضعیف بود؛ شیفت «{job}» لغو شد و درآمدی نداشتی."
     income=int(job_salary(char,job))
     if part_time: income//=2
     if overtime: income=int(income*1.25); d["career"]["overtime"] += 1
@@ -264,18 +285,31 @@ def advance_economy(char):
     d=ensure_advanced(char)
     econ=d["economy"]
     shock=random.random()
-    if shock<.03:
-        econ["inflation"]=min(.80,econ["inflation"]+random.uniform(.03,.12)); econ["shock"]="شوک تورمی"
-    elif shock<.05:
-        econ["growth"]-=random.uniform(.03,.08); econ["unemployment"]=min(.35,econ["unemployment"]+.04); econ["shock"]="رکود"
-    elif shock<.08:
-        econ["growth"]+=random.uniform(.02,.06); econ["unemployment"]=max(.02,econ["unemployment"]-.02); econ["shock"]="رونق"
+    # چرخه اقتصادی: تورم، رکود، رونق و شوک عرضه
+    if shock < .07:
+        econ["inflation"]=min(2.50,econ["inflation"]+random.uniform(.04,.16))
+        econ["growth"]=max(-.25,econ["growth"]-random.uniform(.02,.07))
+        econ["unemployment"]=min(.85,econ["unemployment"]+random.uniform(.025,.09))
+        econ["shock"]="بحران تورمی"
+    elif shock < .15:
+        econ["growth"]=max(-.30,econ["growth"]-random.uniform(.03,.10))
+        econ["unemployment"]=min(.90,econ["unemployment"]+random.uniform(.04,.12))
+        econ["inflation"]=min(2.80,econ["inflation"]+random.uniform(.01,.08))
+        econ["shock"]="رکود شدید"
+    elif shock < .22:
+        econ["growth"]=min(.20,econ["growth"]+random.uniform(.02,.07))
+        econ["unemployment"]=max(.02,econ["unemployment"]-random.uniform(.015,.05))
+        econ["inflation"]=max(.02,econ["inflation"]-random.uniform(.005,.025))
+        econ["shock"]="رونق"
     else:
-        econ["inflation"]=max(.02,econ["inflation"]+random.uniform(-.005,.008))
-        econ["growth"]=max(-.10,min(.12,econ["growth"]+random.uniform(-.01,.01)))
-        econ["unemployment"]=max(.02,min(.35,econ["unemployment"]+random.uniform(-.008,.008)))
+        econ["inflation"]=max(.02,min(2.50,econ["inflation"]+random.uniform(-.012,.025)))
+        econ["growth"]=max(-.30,min(.20,econ["growth"]+random.uniform(-.025,.025)))
+        econ["unemployment"]=max(.02,min(.90,econ["unemployment"]+random.uniform(-.012,.025)))
         econ["shock"]=None
-    econ["currency_value"]=max(.1,econ["currency_value"]/(1+max(0,econ["inflation"]-0.15)*.08))
+
+    econ["job_market"]=max(2,min(98,int(100*(1.0-econ["unemployment"]) * (1.0+econ["growth"]*1.2))))
+    econ["price_index"]=max(0.5,econ.get("price_index",1.0)*(1.0+max(-.05,econ["inflation"])))
+    econ["currency_value"]=max(.03,econ["currency_value"]/(1+max(0,econ["inflation"]-0.12)*.12))
 
 def random_event(char):
     d=ensure_advanced(char)
@@ -325,7 +359,19 @@ def daily_tick(char, game_day):
         # vehicle deterioration
         for v in d["vehicles"]:
             v["condition"]=max(0,v["condition"]-random.choice([0,0,1]))
+        d["world_economy"], world_news = advance_world(d["world_economy"], day, getattr(char,"city",None))
+        d["economy"]["inflation"] = d["world_economy"]["inflation"]
+        d["economy"]["unemployment"] = d["world_economy"]["unemployment"]
+        d["economy"]["growth"] = d["world_economy"]["growth"]
+        d["economy"]["currency_value"] = d["world_economy"]["currency_value"]
         advance_economy(char)
+        chain_msg=advance_chain(char)
+        if chain_msg: msgs.append(chain_msg)
+        new_chain=chain_event(char,d["world_economy"])
+        if new_chain: msgs.append(new_chain)
+        if world_news and random.random()<.35: msgs.append("📰 "+world_news[-1])
+        for bmsg in evolve_businesses(d["world_economy"], getattr(char,"city",None)):
+            if random.random()<.5: msgs.append(bmsg)
         if d["event_cooldown"]<=0 and random.random()<.18:
             msgs.append(random_event(char)); d["event_cooldown"]=2
         else: d["event_cooldown"]=max(0,d["event_cooldown"]-1)
@@ -344,6 +390,27 @@ def daily_tick(char, game_day):
         char.alive=False
         msgs.append("💀 سلامتت به صفر رسید؛ شخصیتت از دنیا رفت.")
     return msgs
+
+
+def update_npc_population(char):
+    """NPCهای پایدار: شغل، پول، هدف و حافظه بر اساس اقتصاد تغییر می‌کنند."""
+    d=ensure_advanced(char); store=d.setdefault("npcs", {})
+    city=getattr(char,"city",""); econ=d["world_economy"]; unemp=econ.get("unemployment",.08)
+    names=[("رضا","پسر"),("نگار","دختر"),("سینا","پسر"),("مهسا","دختر"),("کیان","پسر"),("سارا","دختر"),("محمد","پسر"),("آوا","دختر")]
+    for name,gender in names:
+        if name not in store:
+            store[name]={"name":name,"gender":gender,"age":random.randint(18,65),"job":"بیکار","income":0,"money":random.randint(2_000_000,60_000_000),"goal":random.choice(["خرید خانه","پیشرفت شغلی","تشکیل خانواده","مهاجرت","پس‌انداز"]),"memory":[]}
+        n=store[name]; n.setdefault("memory",[])
+        if n.get("job")=="بیکار" and random.random() < max(.02,1-unemp):
+            n["job"]=random.choice(["فروشنده","کارگر","پیک","کارمند"])
+            n["income"]=random.randint(8_000_000,30_000_000)
+            n["memory"].append(f"روز {d['last_tick_day']}: شغل پیدا کرد")
+        elif n.get("job")!="بیکار" and random.random() < unemp*.12:
+            n["job"]="بیکار"; n["income"]=0; n["memory"].append(f"روز {d['last_tick_day']}: اخراج شد")
+        if n.get("income",0)>0: n["money"] += int(n["income"]/30)
+        n["money"] = max(0,n.get("money",0))
+        if len(n["memory"])>10: n["memory"]=n["memory"][-10:]
+    return store
 
 def advanced_status(char):
     d=ensure_advanced(char); p=d["personality"]; n=d["needs"]; e=d["education"]; b=d["bank"]; l=d["legal"]

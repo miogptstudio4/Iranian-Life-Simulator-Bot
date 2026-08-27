@@ -74,10 +74,19 @@ def buy_item(player, shop_name, item_name):
     if not shop or item_name not in shop["items"]:
         return False, "❌ این کالا پیدا نشد."
     price, effects = shop["items"][item_name]
-    # خرید بر اساس اقتصاد واقعی شهر/تورم
+    # قیمت واقعی: تورم + عرضه/تقاضا + شرایط شهر
     try:
-        from advanced_simulation import living_cost
-        price = living_cost(player, price)
+        from advanced_simulation import living_cost, ensure_advanced
+        from living_world import market_price
+        d = ensure_advanced(player)
+        aliases = {"نان":"نان", "آب معدنی":"سوخت", "داروی عمومی":"دارو", "ویتامین":"دارو", "کمک‌های اولیه":"دارو", "تی‌شرت":"لباس", "شلوار":"لباس", "کفش":"لباس", "کاپشن":"لباس", "گوشی اقتصادی":"موبایل", "گوشی پرچمدار":"موبایل", "هندزفری":"موبایل", "هدفون":"موبایل", "لپ‌تاپ":"موبایل", "یخچال":"لوازم خانه", "تلویزیون":"لوازم خانه", "پنکه":"لوازم خانه", "چراغ مطالعه":"لوازم خانه"}
+        good = aliases.get(item_name)
+        if good:
+            base_market = market_price(d["world_economy"], good)
+            base_catalog = max(1, price)
+            price = max(1, int(base_market * (base_catalog / {"نان":80000,"سوخت":40000,"دارو":350000,"لباس":2000000,"موبایل":18000000,"لوازم خانه":7000000}.get(good, base_catalog))))
+        else:
+            price = living_cost(player, price)
     except Exception:
         price = hard_cost(price)
     if player.money < price:

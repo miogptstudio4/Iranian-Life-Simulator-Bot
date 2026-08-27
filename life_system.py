@@ -9,23 +9,34 @@ def make_family(gender, family_type):
     father_jobs = ["کارمند","کارگر","کاسب","راننده","معلم","تعمیرکار","برنامه‌نویس"]
     mother_jobs = ["خانه‌دار","معلم","کارمند","پرستار","فروشنده","آرایشگر"]
     members = []
+    # بازیکن در شروع ۱۷ ساله است؛ والدین باید سن منطقی نسبت به او داشته باشند.
+    player_age = 17
     if "تک‌والد" in family_type:
         rel = "پدر" if random.random() < .5 else "مادر"
+        age = random.randint(player_age + 18, player_age + 38)
         members.append({"relation": rel, "name": random.choice(father_names if rel=="پدر" else mother_names),
-                        "age": random.randint(28, 48),
-                        "job": random.choice(father_jobs if rel=="پدر" else mother_jobs),
+                        "age": age, "job": random.choice(father_jobs if rel=="پدر" else mother_jobs),
                         "closeness": random.randint(60, 90)})
     else:
-        members.append({"relation":"پدر","name":random.choice(father_names),"age":random.randint(30,52),
+        father_age = random.randint(player_age + 18, player_age + 38)
+        mother_age = random.randint(max(player_age + 18, father_age - 8), father_age + 4)
+        members.append({"relation":"پدر","name":random.choice(father_names),"age":father_age,
                         "job":random.choice(father_jobs),"closeness":random.randint(55,90)})
-        members.append({"relation":"مادر","name":random.choice(mother_names),"age":random.randint(27,49),
+        members.append({"relation":"مادر","name":random.choice(mother_names),"age":mother_age,
                         "job":random.choice(mother_jobs),"closeness":random.randint(55,90)})
     siblings = random.randint(0, 3)
     for i in range(siblings):
-        members.append({"relation":"خواهر" if random.random()<.5 else "برادر",
-                        "name": random.choice(father_names+mother_names),
-                        "age": random.randint(2, 17), "job":"دانش‌آموز",
-                        "closeness":random.randint(45,85)})
+        age = random.randint(2, 16)
+        if age < 3:
+            job = "نوزاد"
+        elif age < 7:
+            job = "کودکستان"
+        else:
+            job = "دانش‌آموز"
+        is_female = random.random() < .5
+        members.append({"relation":"خواهر" if is_female else "برادر",
+                        "name": random.choice(["مریم","زهرا","فاطمه","سارا","نسرین","الهام","سمیه","نازنین","آوا","هانا","یسنا","نیکا","رها"] if is_female else ["رضا","محمد","حسین","مجید","امیر","مهدی","علی","حامد","سعید","نوید","کیان","پارسا"]),
+                        "age": age, "job":job, "closeness":random.randint(45,85)})
     return members
 
 def home_for_family(family_type):
@@ -77,6 +88,10 @@ def advance_life_age(char, current_game_day):
     char.age_days=getattr(char,"age_days",100)+elapsed
     old_years=max(10,(char.age_days-elapsed)//10)
     new_years=max(10,char.age_days//10)
+    # سن فرزندان با همان تقویم بازی جلو می‌رود؛ ۲ ساله هرگز دانش‌آموز نمایش داده نمی‌شود.
+    for child in getattr(char, "children", []) or []:
+        child["age_days"] = int(child.get("age_days", child.get("age", 0))) + elapsed
+        child["age"] = child["age_days"] // 10
     messages=[]
     if new_years>old_years:
         for y in range(old_years+1,new_years+1):
