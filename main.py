@@ -20,10 +20,11 @@ try:
     SUPER_ADMIN_ID, is_admin, is_super_admin, add_admin, remove_admin, list_admins
 )
     from map_system import DIRECTIONS, generate_location_name, get_random_description, PlayerCounter
-from player_panel import player_panel, show_profile
-from time_system import GameTime, time_effects, is_open
-from database import init_database, save_player, load_player, apply_loaded_data, PSYCOPG2_AVAILABLE
-from provinces import PROVINCES, PROVINCE_LIST, ALL_IRAN_CITIES
+    from player_panel import player_panel, show_profile
+    from time_system import GameTime, time_effects, is_open
+    from database import init_database, save_player, load_player, apply_loaded_data, PSYCOPG2_AVAILABLE
+    from provinces import PROVINCES, PROVINCE_LIST, ALL_IRAN_CITIES
+    from life_system import make_family, home_for_family, home_text, family_text, daily_life_event, advance_life_age
 except ImportError as e:
     print("خطا در بارگذاری دیتا:", e)
     sys.exit(1)
@@ -39,7 +40,7 @@ class Character:
         self.city = random.choice(CITY_LIST)
         self.family = random.choice(FAMILY_TYPES)
         self.birth_year = 1385
-        self.age_days = random.randint(2, 7)
+        self.age_days = 100  # ۱۰ سالگی؛ دوره تولد تا ۱۰ سالگی در شروع بازی روایت می‌شود
 
         city_data = CITIES.get(self.city, {})
         neighborhoods = city_data.get("neighborhoods", ["مرکز شهر"])
@@ -71,6 +72,9 @@ class Character:
         self.bio = "یک ایرانی در حال زنده ماندن..."
         self.marital_status = "مجرد"
         self.children = []
+        self.family_members = make_family(self.gender, self.family)
+        self.home_data = home_for_family(self.family)
+        self.last_age_game_day = 0
         self.numeric_id = None  # آیدی عددی (مثل تلگرام) - توسط ادمین اصلی تنظیم می‌شود
 
     def status(self, players: PlayerCounter = None):
@@ -80,7 +84,7 @@ class Character:
         print(f"  مکان    : {self.location}")
         print(f"  مختصات  : ({self.x}, {self.y})")
         print(f"  خانه    : {self.home}")
-        print(f"  سن      : {self.age_days} روز")
+        print(f"  سن      : {max(10, self.age_days // 10)} سال | روزهای سپری‌شده این چرخه: {self.age_days % 10}/10")
         print(f"  پول     : {self.money:,} تومان")
         if self.god_mode:
             print("  ⚡ حالت خدا: فعال")
@@ -266,6 +270,14 @@ def explore_city(char: Character, players: PlayerCounter, game_time: GameTime):
             if not char.alive:
                 break
 
+        elif cmd in ["خانه", "خونه", "home"]:
+            print("\n" + home_text(char))
+            print("\n" + daily_life_event(char))
+        elif cmd in ["خانواده", "family"]:
+            print("\n" + family_text(char))
+        elif cmd in ["زندگی", "life"]:
+            print("\n" + home_text(char))
+            print("\n" + family_text(char))
         elif cmd in ["پلیر", "player"]:
             player_panel(char)
 
@@ -291,7 +303,12 @@ def explore_city(char: Character, players: PlayerCounter, game_time: GameTime):
             char.y += dy
 
             # گذر زمان (۱۵ تا ۴۵ دقیقه)
+            old_day = game_time.day
             game_time.advance(random.randint(15, 45))
+            for age_msg in advance_life_age(char, game_time.day):
+                print(age_msg)
+            if game_time.day > old_day and random.random() < 0.35:
+                print(daily_life_event(char))
 
             # تولید مکان جدید
             char.location = generate_location_name(char.city, char.neighborhood)
@@ -378,22 +395,25 @@ def main():
                 print("پیدا نشد. بازی جدید شروع می‌شود.")
 
 
-    print(f"\nتو به دنیا اومدی...")
+    print(f"\nتو به دنیا اومدی... (۰ سالگی)")
     print(f"▸ نام: {char.name} | جنسیت: {char.gender}")
     print(f"▸ شهر: {char.city} | محله: {char.neighborhood}")
     print(f"▸ خانه: {char.home}")
     print(f"▸ خانواده: {char.family}")
-    print(f"\n{players.status_line()}")
-    print(f"🕐 {game_time.formatted()}")
+    print("\n" + family_text(char))
+    print("\nچند سال اول زندگی‌ات در کنار خانواده گذشت؛ کم‌کم شخصیتت شکل گرفت و محیط زندگی‌ات را شناختی.")
+    print("\n🎂 حالا به ۱۰ سالگی رسیدی.")
+    print("⏳ از این لحظه بازی اصلی شروع می‌شود؛ هر ۱۰ روز بازی = ۱ سال از عمر شخصیت.")
+    char.age_days = 100
+    char.last_age_game_day = game_time.day
     char.status(players)
 
-    input("\nبرای ادامه Enter بزن...")
+    input("\nبرای شروع زندگی در ۱۰ سالگی Enter بزن...")
 
     print("\n" + "─" * 55)
-    print("رویداد اول: نوزاد گرسنه")
+    print("🎮 بازی اصلی شروع شد!")
+    print("دستورهای مهم: خانه | خانواده | زندگی | زمان | وضعیت")
     print("─" * 55)
-    print("۱. گریه کن   ۲. آروم بمون   ۳. شانسی")
-    print("(یا بنویس: ادمین)")
 
     while True:
         choice = input("\n> ").strip().lower()

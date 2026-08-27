@@ -72,6 +72,9 @@ def init_database():
                 bio             TEXT DEFAULT '',
                 admin_password_hash VARCHAR(64),
                 children        JSONB DEFAULT '[]',
+                family_members JSONB DEFAULT '[]',
+                home_data      JSONB DEFAULT '{}',
+                last_age_game_day INT DEFAULT 0,
                 created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_login      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -85,6 +88,14 @@ def init_database():
                 added_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
+
+        # ستون‌های جدید برای نسخه‌های قبلی دیتابیس
+        for migration in [
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS family_members JSONB DEFAULT '[]'",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS home_data JSONB DEFAULT '{}'",
+            "ALTER TABLE players ADD COLUMN IF NOT EXISTS last_age_game_day INT DEFAULT 0",
+        ]:
+            cur.execute(migration)
 
         # ادمین اصلی همیشه باشد
         cur.execute("""
@@ -120,16 +131,18 @@ def save_player(char) -> bool:
     try:
         cur = conn.cursor()
         children_json = json.dumps(getattr(char, 'children', []), ensure_ascii=False)
+        family_json = json.dumps(getattr(char, 'family_members', []), ensure_ascii=False)
+        home_json = json.dumps(getattr(char, 'home_data', {}), ensure_ascii=False)
 
         cur.execute("""
             INSERT INTO players (
                 player_id, numeric_id, name, display_name, gender, city, neighborhood,
                 home, family, birth_year, age_days, hunger, thirst, fatigue, health, mental,
                 money, location, x, y, god_mode, marital_status, bio, admin_password_hash,
-                children, updated_at, last_login
+                children, family_members, home_data, last_age_game_day, updated_at, last_login
             ) VALUES (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             )
             ON CONFLICT (player_id) DO UPDATE SET
                 numeric_id = EXCLUDED.numeric_id,
@@ -155,6 +168,9 @@ def save_player(char) -> bool:
                 bio = EXCLUDED.bio,
                 admin_password_hash = EXCLUDED.admin_password_hash,
                 children = EXCLUDED.children,
+                family_members = EXCLUDED.family_members,
+                home_data = EXCLUDED.home_data,
+                last_age_game_day = EXCLUDED.last_age_game_day,
                 updated_at = CURRENT_TIMESTAMP,
                 last_login = CURRENT_TIMESTAMP;
         """, (
@@ -183,6 +199,9 @@ def save_player(char) -> bool:
             getattr(char, 'bio', ''),
             getattr(char, 'admin_password_hash', ''),
             children_json,
+            family_json,
+            home_json,
+            getattr(char, 'last_age_game_day', 0),
         ))
         conn.commit()
         cur.close()
@@ -249,7 +268,10 @@ def apply_loaded_data(char, data: dict):
     char.home = data.get("home", char.home)
     char.family = data.get("family", char.family)
     char.birth_year = data.get("birth_year", 1385)
-    char.age_days = data.get("age_days", 0)
+    char.age_days = data.get("age_days", 100)
+    char.family_members = data.get("family_members") or getattr(char, 'family_members', [])
+    char.home_data = data.get("home_data") or getattr(char, 'home_data', {})
+    char.last_age_game_day = data.get("last_age_game_day", 0)
     char.hunger = data.get("hunger", 50)
     char.thirst = data.get("thirst", 50)
     char.fatigue = data.get("fatigue", 30)
