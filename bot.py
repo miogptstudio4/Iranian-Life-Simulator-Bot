@@ -377,7 +377,7 @@ def group_panel_keyboard(owner_id: str):
         [InlineKeyboardButton("🏠 خانه", callback_data=_owner_callback("life", owner_id, "home")),
          InlineKeyboardButton("👨‍👩‍👧 خانواده", callback_data=_owner_callback("life", owner_id, "family"))],
         [InlineKeyboardButton("🧠 زندگی هوشمند", callback_data=_owner_callback("life", owner_id, "smart"))],
-        [InlineKeyboardButton("🚔 پلیس و قانون", callback_data=_owner_callback("life", owner_id, "police"))],
+        [InlineKeyboardButton("⚖️ پلیس و قانون", callback_data=_owner_callback("life", owner_id, "legal"))],
         [InlineKeyboardButton("🏪 مغازه‌ها", callback_data=_owner_callback("shop", owner_id, "list")),
          InlineKeyboardButton("🎒 کوله‌پشتی", callback_data=_owner_callback("life", owner_id, "inventory"))],
         [InlineKeyboardButton("💼 کار", callback_data=_owner_callback("life", owner_id, "advwork")),
@@ -563,6 +563,21 @@ async def movement_callback(update, context):
 
 
 
+def law_keyboard(owner_id: str | None = None):
+    """پنل مستقل قانون؛ همه دکمه‌ها به اکشن‌های واقعی متصل‌اند."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🚔 وضعیت پلیس", callback_data=_owner_callback("life", owner_id, "police")),
+         InlineKeyboardButton("⚖️ وضعیت قانون", callback_data=_owner_callback("life", owner_id, "legal"))],
+        [InlineKeyboardButton("⚠️ جرائم", callback_data=_owner_callback("life", owner_id, "crime")),
+         InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
+        [InlineKeyboardButton("📝 ثبت شکایت", callback_data=_owner_callback("life", owner_id, "complaint")),
+         InlineKeyboardButton("👨‍⚖️ دادگاه", callback_data=_owner_callback("life", owner_id, "court"))],
+        [InlineKeyboardButton("👨‍💼 وکیل", callback_data=_owner_callback("life", owner_id, "lawyer")),
+         InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
+        [InlineKeyboardButton("⬅️ بازگشت به زندگی", callback_data=_owner_callback("life", owner_id, "menu"))],
+    ])
+
+
 def life_keyboard(owner_id: str | None = None):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🏫 تحصیل", callback_data=_owner_callback("life", owner_id, "education")), InlineKeyboardButton("📚 درس خواندن", callback_data=_owner_callback("life", owner_id, "study"))],
@@ -576,7 +591,6 @@ def life_keyboard(owner_id: str | None = None):
         [InlineKeyboardButton("⚠️ جرم", callback_data=_owner_callback("life", owner_id, "crime")), InlineKeyboardButton("💸 پرداخت جریمه", callback_data=_owner_callback("life", owner_id, "fine"))],
         [InlineKeyboardButton("📝 شکایت", callback_data=_owner_callback("life", owner_id, "complaint")), InlineKeyboardButton("👨‍⚖️ دادگاه", callback_data=_owner_callback("life", owner_id, "court"))],
         [InlineKeyboardButton("👨‍💼 وکیل", callback_data=_owner_callback("life", owner_id, "lawyer")), InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
-        [InlineKeyboardButton("🔒 زندان", callback_data=_owner_callback("life", owner_id, "jail"))],
         [InlineKeyboardButton("🏥 بیمارستان", callback_data=_owner_callback("life", owner_id, "hospital")), InlineKeyboardButton("🏙 اقتصاد شهر", callback_data=_owner_callback("life", owner_id, "cityeconomy"))],
         [InlineKeyboardButton("🏢 کسب‌وکار", callback_data=_owner_callback("life", owner_id, "business")), InlineKeyboardButton("🚀 راه‌اندازی", callback_data=_owner_callback("life", owner_id, "startbiz")), InlineKeyboardButton("📊 فعالیت", callback_data=_owner_callback("life", owner_id, "runbiz"))],
         [InlineKeyboardButton("📈 بورس", callback_data=_owner_callback("life", owner_id, "stocks")), InlineKeyboardButton("🧾 مالیات", callback_data=_owner_callback("life", owner_id, "tax")), InlineKeyboardButton("💳 پرداخت مالیات", callback_data=_owner_callback("life", owner_id, "paytax"))],
@@ -689,7 +703,16 @@ async def life_callback(update, context):
                 f"🔒 زندان: {d.get('jail_days',0)} روز\n"
                 f"📝 شکایت‌های ثبت‌شده: {d.get('complaints',0)}\n\n"
                 "از این بخش می‌توانی وضعیت قانونی خودت را بررسی کنی، شکایت ثبت کنی یا برای پرونده وکیل بگیری.")
-    elif key == "legal": text = legal_text(player)
+    elif key == "legal":
+        d = ensure_advanced(player)["legal"]
+        text = ("⚖️ مرکز قانون و دادگستری\n\n"
+                f"📁 سابقه کیفری: {int(d.get('record', 0))}\n"
+                f"💸 جریمه‌های پرداخت‌نشده: {int(d.get('fines', 0)):,} تومان\n"
+                f"🔒 زندان: {int(d.get('jail_days', 0))} روز\n"
+                f"📝 شکایت‌ها: {int(d.get('complaints', 0))}\n"
+                f"💰 وثیقه: {int(d.get('bail', 0)):,} تومان\n\n"
+                "گزینه موردنظر را از دکمه‌های پایین انتخاب کن.")
+        markup = law_keyboard(owner_id)
     elif key == "complaint":
         d = ensure_advanced(player)["legal"]
         d["complaints"] = int(d.get("complaints", 0)) + 1
@@ -1149,8 +1172,16 @@ async def handle_message(update, context):
         await update.message.reply_text(relationship_text(player), reply_markup=life_keyboard(uid))
         return
 
-    if text in ["⚖️ قانون", "قانون"]:
-        await update.message.reply_text(legal_text(player), reply_markup=life_keyboard(uid))
+    if text in ["⚖️ قانون", "قانون", "قوانین", "دادگستری", "⚖️ قوانین"]:
+        d = ensure_advanced(player)["legal"]
+        reply = ("⚖️ مرکز قانون و دادگستری\n\n"
+                 f"📁 سابقه کیفری: {int(d.get('record', 0))}\n"
+                 f"💸 جریمه‌های پرداخت‌نشده: {int(d.get('fines', 0)):,} تومان\n"
+                 f"🔒 زندان: {int(d.get('jail_days', 0))} روز\n"
+                 f"📝 شکایت‌ها: {int(d.get('complaints', 0))}\n"
+                 f"💰 وثیقه: {int(d.get('bail', 0)):,} تومان\n\n"
+                 "گزینه موردنظر را از دکمه‌های پایین انتخاب کن.")
+        await update.message.reply_text(reply, reply_markup=law_keyboard(uid))
         return
 
     if text in ["🚔 پلیس", "پلیس"]:
@@ -1161,7 +1192,7 @@ async def handle_message(update, context):
             f"💸 جریمه‌های پرداخت‌نشده: {d.get('fines',0):,} تومان\n"
             f"🔒 زندان: {d.get('jail_days',0)} روز\n"
             f"📝 شکایت‌های ثبت‌شده: {d.get('complaints',0)}",
-            reply_markup=life_keyboard(uid)
+            reply_markup=law_keyboard(uid)
         )
         return
 
